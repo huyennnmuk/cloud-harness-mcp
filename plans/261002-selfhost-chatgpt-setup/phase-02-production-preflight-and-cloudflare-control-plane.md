@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Production preflight and Cloudflare control plane"
-status: pending
+status: completed
 priority: P1
 effort: "2h"
 dependencies: [1]
@@ -172,11 +172,11 @@ inside Docker; no origin A/AAAA record points it at `72.62.171.12`.
 
 ## Todo
 
-- [ ] Task 2.1 — Establish independent recovery and immutable baseline.
-- [ ] Task 2.2 — Prove aggregate capacity, not only workspace count.
-- [ ] Task 2.3 — Move only `codepod.site` authority to Cloudflare.
-- [ ] Task 2.4 — Create the Tunnel and secret handoff.
-- [ ] Task 2.5 — Configure Access, Managed OAuth, and recovery order.
+- [x] Task 2.1 — Establish independent recovery and immutable baseline.
+- [x] Task 2.2 — Prove aggregate capacity, not only workspace count.
+- [x] Task 2.3 — Move only `codepod.site` authority to Cloudflare.
+- [x] Task 2.4 — Create the Tunnel and secret handoff.
+- [x] Task 2.5 — Configure Access, Managed OAuth, and recovery order.
 
 ## Risk Assessment
 

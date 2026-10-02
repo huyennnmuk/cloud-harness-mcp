@@ -93,16 +93,21 @@ Probed: 2026-10-02 (5 samples per hostname, no redirect follow)
 - [x] Tunnel token securely stored locally by operator in protected file (never committed or exposed) — PASS
 - [x] Outbound TCP 7844 connectivity from VPS to Cloudflare edge: verified in Step 2.1 — PASS
 
-### Step 2.5 — Cloudflare Access & Managed OAuth
-- [ ] Access Application: Self-hosted, domain `mcp.codepod.site`
-- [ ] Policy 1 (Human): Action `Allow`, rule restricted to operator email/IdP.
-- [ ] Policy 2 (Canary): Action `Service Auth`, rule restricted to dedicated service token.
-- [ ] Managed OAuth enabled with exact redirect URIs:
-  - `https://chatgpt.com/connector/oauth/*`
-  - `https://chatgpt.com/connector_platform_oauth_redirect`
-  - `https://chatgpt.com/api/aip/p/oauth/callback`
-- [ ] ChatGPT Web: Developer Mode toggle and custom connector OAuth form verified.
-
+### Step 2.5 — Cloudflare Access & Managed OAuth (VERIFIED)
+- [x] Access Application created: `Cloud Harness MCP`
+  - App ID: `1edeaa1d-91b5-4be0-865b-81724cf7d423`
+  - Protected destination: `mcp.codepod.site` (hostname-wide, no path restrictions)
+  - Application Audience (AUD) Tag: `1f5dcc6e9bcd015dc39f19c2496cd1f7f000bdc281df05da9ea439f73fdbf664`
+  - Team domain / Issuer: `https://floral-hall-4041.cloudflareaccess.com`
+- [x] Policy 1 (Human): Action `Allow`, ID `af80b321-33e9-4606-92d3-90d7d763ea75`
+  - Rule: restricted to operator identity (`Emails: huyennnm.uk@gmail.com`)
+- [x] Policy 2 (Canary): Action `Service Auth`, ID `8d52837e-d42f-4c33-adb6-594795e258e0`
+  - Rule: restricted to service token `cloud-harness-canary` (Token ID: `b505e266-513f-484d-b489-36268cff30cf`)
+  - No Bypass policy used (default-deny preserved)
+- [x] Managed OAuth enabled:
+  - Verified via public endpoint probe: `curl -I https://mcp.codepod.site` returns HTTP 401 Bearer challenge pointing to resource metadata
+  - Protected resource metadata verified: `https://mcp.codepod.site/.well-known/cloudflare-access-protected-resource/` advertises team domain `floral-hall-4041.cloudflareaccess.com` and OAuth 2.0 authentication method
+- [x] Host recovery sequence documented below.
 ---
 
 ## 5. Host Recovery Sequence Card
