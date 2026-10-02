@@ -85,12 +85,13 @@ Probed: 2026-10-02 (5 samples per hostname, no redirect follow)
 - [x] Existing site health re-probed and healthy (200 / 301 / 200) — PASS
 - [x] No origin A/AAAA record exists for `mcp.codepod.site` (NXDOMAIN preserved) — PASS
 
-### Step 2.4 — Cloudflare Tunnel Creation
-- [ ] Remotely managed tunnel created: `cloud-harness-codepod`
-- [ ] Tunnel UUID: `________________________`
-- [ ] Public hostname route: `mcp.codepod.site` -> `http://ingress:3100`
-- [ ] Tunnel token stored securely in operator 0600 file (never committed or exposed).
-- [ ] Outbound VPS probe: `nc -zv -w 5 region1.v2.argotunnel.com 7844` or equivalent exit 0.
+### Step 2.4 — Cloudflare Tunnel Creation (VERIFIED)
+- [x] Remotely managed tunnel created: `cloud-harness-codepod`
+- [x] Tunnel UUID: `8497f1d0-2cf0-4782-99ef-30b69343a724`
+- [x] Public hostname route: `mcp.codepod.site` -> `http://ingress:3100` (service type HTTP) — PASS
+- [x] DNS route verified via DoH: proxied to Cloudflare Edge (`172.67.158.1`, `104.21.66.87`), VPS origin IP unexposed — PASS
+- [x] Tunnel token securely stored locally by operator in protected file (never committed or exposed) — PASS
+- [x] Outbound TCP 7844 connectivity from VPS to Cloudflare edge: verified in Step 2.1 — PASS
 
 ### Step 2.5 — Cloudflare Access & Managed OAuth
 - [ ] Access Application: Self-hosted, domain `mcp.codepod.site`
