@@ -79,7 +79,12 @@ if [[ $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
   [[ ! -L $state/release-config-current && -d $state/release-config-current ]] || { echo "last-known-good configuration is unavailable" >&2; exit 6; }
   image_metadata_complete=true
   for name in "${IMAGE_NAMES[@]}"; do
-    [[ -f $state/release-${name}-image ]] || image_metadata_complete=false
+    if [[ -f $state/release-${name}-image ]]; then
+      recorded_id=$(<"$state/release-${name}-image")
+      docker image inspect "$recorded_id" >/dev/null 2>&1 || image_metadata_complete=false
+    else
+      image_metadata_complete=false
+    fi
   done
   if [[ $image_metadata_complete == false ]]; then
     verify_running_images || { echo "current release image identity could not be verified" >&2; exit 6; }
