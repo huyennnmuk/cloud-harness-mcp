@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Cloudflare Access cutover"
-status: pending
+status: completed
 priority: P1
 effort: "2h"
 dependencies: [3]
@@ -171,12 +171,12 @@ protected local rollback snapshot until final retirement.
 
 ## Todo
 
-- [ ] Task 4.1 — Freeze and verify both recovery planes.
-- [ ] Task 4.2 — Install canary credentials without exposing values.
-- [ ] Task 4.3 — Stage Access runtime configuration.
-- [ ] Task 4.4 — Promote through the same-SHA deploy path.
-- [ ] Task 4.5 — Rehearse local rollback and forward recovery.
-- [ ] Task 4.6 — Recheck ChatGPT capability immediately before acceptance.
+- [x] Task 4.1 — Freeze and verify both recovery planes.
+- [x] Task 4.2 — Install canary credentials without exposing values.
+- [x] Task 4.3 — Stage Access runtime configuration.
+- [x] Task 4.4 — Promote through the same-SHA deploy path.
+- [x] Task 4.5 — Rehearse local rollback and forward recovery.
+- [x] Task 4.6 — Recheck ChatGPT capability immediately before acceptance.
 
 ## Risk Assessment
 

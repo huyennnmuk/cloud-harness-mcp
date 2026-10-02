@@ -68,7 +68,7 @@ mutation while retaining public Access canary and rollback.
 | 1 | [Repository release and ingress readiness](./phase-01-repository-ingress-readiness.md) | Completed | — |
 | 2 | [Production preflight and Cloudflare control plane](./phase-02-production-preflight-and-cloudflare-control-plane.md) | Completed | 1 |
 | 3 | [Owner-bearer Tunnel install](./phase-03-owner-bearer-tunnel-install.md) | Completed | 2 |
-| 4 | [Cloudflare Access cutover](./phase-04-cloudflare-access-cutover.md) | Pending | 3 |
+| 4 | [Cloudflare Access cutover](./phase-04-cloudflare-access-cutover.md) | Completed | 3 |
 | 5 | [GitHub App private-repository binding](./phase-05-github-app-private-push.md) | Pending | 4 |
 | 6 | [ChatGPT and operational acceptance](./phase-06-chatgpt-and-operational-acceptance.md) | Pending | 5 |
 

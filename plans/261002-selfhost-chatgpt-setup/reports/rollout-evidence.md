@@ -151,3 +151,21 @@ Probed: 2026-10-02 (5 samples per hostname, no redirect follow)
   - `www.yourfitnature.com`: HTTP 301 (912 ms, stable)
   - `srv1281807.hstgr.cloud`: HTTP 200 (1400 ms, stable)
   - Public `https://mcp.codepod.site`: HTTP 401 (protected by Access Managed OAuth)
+
+---
+
+## 7. Phase 4 Cloudflare Access Cutover (VERIFIED)
+
+- **Deployed Commit SHA**: `e6479a36bae6564a497e0a35458e1224ece9ae36` (verified on host detached HEAD)
+- **Authentication Mode**: `AUTH_MODE=cloudflare-access` (owner-bearer retired from active runtime)
+- **Network Posture**: `profile:dependency-access default:dependency-access` (firewall policy reconciled and attested)
+- **Public Access Canary**:
+  - `deploy-canary=pass` (exercised through Cloudflare Access using `cloud-harness-canary` service token)
+- **Public Endpoints & OAuth Discovery**:
+  - `.well-known/cloudflare-access-protected-resource/`: HTTP 200 (advertises OAuth 2.0 authorization server `floral-hall-4041.cloudflareaccess.com`)
+  - `/mcp`: HTTP 401 (RFC 8707 Bearer challenge)
+  - `/dashboard`: HTTP 401 (renders Cloudflare Access login screen for human identity `huyennnm.uk@gmail.com`)
+- **Zero Regression on Existing Sites**:
+  - `yourfitnature.com`: HTTP 200 (1426 ms, stable)
+  - `www.yourfitnature.com`: HTTP 301 (956 ms, stable)
+  - `srv1281807.hstgr.cloud`: HTTP 200 (1320 ms, stable)
