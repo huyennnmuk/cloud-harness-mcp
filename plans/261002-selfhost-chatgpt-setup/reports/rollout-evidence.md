@@ -78,10 +78,12 @@ Probed: 2026-10-02 (5 samples per hostname, no redirect follow)
   - Docker daemon: Not currently installed (`command not found`); clean host; installation handled automatically by `scripts/install.sh` in Phase 3.
 - [x] **Cloudflare Edge Connectivity:**
   - TCP 7844 to `region1.v2.argotunnel.com`: Reachable / PASS
-### Step 2.3 — Nameserver Delegation
-- [ ] Change nameservers for `codepod.site` at Hostinger registrar to assigned Cloudflare nameservers.
-- [ ] Verify `yourfitnature.com` nameservers are **NOT** changed.
-- [ ] Cloudflare zone status: `Active`.
+### Step 2.3 — Nameserver Delegation (VERIFIED)
+- [x] Nameservers for `codepod.site` delegated at registrar to Cloudflare:
+  - RDAP registry authoritative NS: `kristina.ns.cloudflare.com`, `zahir.ns.cloudflare.com` — PASS
+- [x] `yourfitnature.com` nameservers verified 100% untouched (`ns1.dns-parking.com`, `ns2.dns-parking.com`) — PASS
+- [x] Existing site health re-probed and healthy (200 / 301 / 200) — PASS
+- [x] No origin A/AAAA record exists for `mcp.codepod.site` (NXDOMAIN preserved) — PASS
 
 ### Step 2.4 — Cloudflare Tunnel Creation
 - [ ] Remotely managed tunnel created: `cloud-harness-codepod`
