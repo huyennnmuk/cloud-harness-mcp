@@ -80,11 +80,11 @@ build_restore_payload() {
     echo "-A $EGRESS_CHAIN -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited"
     echo "-A $EGRESS_CHAIN -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited"
     for resolver in "${DNS_RESOLVERS[@]}"; do
-      echo "-A $EGRESS_CHAIN -p udp -d $resolver --dport 53 -j ACCEPT"
-      echo "-A $EGRESS_CHAIN -p tcp -d $resolver --dport 53 -j ACCEPT"
+      echo "-A $EGRESS_CHAIN -d $resolver/32 -p udp -m udp --dport 53 -j ACCEPT"
+      echo "-A $EGRESS_CHAIN -d $resolver/32 -p tcp -m tcp --dport 53 -j ACCEPT"
     done
-    echo "-A $EGRESS_CHAIN -p tcp --dport 80 -j ACCEPT"
-    echo "-A $EGRESS_CHAIN -p tcp --dport 443 -j ACCEPT"
+    echo "-A $EGRESS_CHAIN -p tcp -m tcp --dport 80 -j ACCEPT"
+    echo "-A $EGRESS_CHAIN -p tcp -m tcp --dport 443 -j ACCEPT"
     echo "-A $EGRESS_CHAIN -j REJECT --reject-with icmp-port-unreachable"
     echo COMMIT
   } > "$filter"
@@ -93,8 +93,8 @@ build_restore_payload() {
     echo ":$NAT_CHAIN - [0:0]"
     echo "-A $NAT_CHAIN -p tcp -m multiport --dports 80,443 -j MASQUERADE"
     for resolver in "${DNS_RESOLVERS[@]}"; do
-      echo "-A $NAT_CHAIN -p udp -d $resolver --dport 53 -j MASQUERADE"
-      echo "-A $NAT_CHAIN -p tcp -d $resolver --dport 53 -j MASQUERADE"
+      echo "-A $NAT_CHAIN -d $resolver/32 -p udp -m udp --dport 53 -j MASQUERADE"
+      echo "-A $NAT_CHAIN -d $resolver/32 -p tcp -m tcp --dport 53 -j MASQUERADE"
     done
     echo COMMIT
   } > "$nat"
