@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Owner-bearer Tunnel install"
-status: pending
+status: completed
 priority: P1
 effort: "2h"
 dependencies: [2]
@@ -173,11 +173,11 @@ applied, attested, and wired into systemd pre-start.
 
 ## Todo
 
-- [ ] Task 3.1 — Transfer inputs and run the pinned installer.
-- [ ] Task 3.2 — Verify Tunnel boundary without rendering secret config.
-- [ ] Task 3.3 — Enable and attest dependency access.
-- [ ] Task 3.4 — Prove same-SHA manual rollback before Access.
-- [ ] Task 3.5 — Recheck shared-host and no-touch gates.
+- [x] Task 3.1 — Transfer inputs and run the pinned installer.
+- [x] Task 3.2 — Verify Tunnel boundary without rendering secret config.
+- [x] Task 3.3 — Enable and attest dependency access.
+- [x] Task 3.4 — Prove same-SHA manual rollback before Access.
+- [x] Task 3.5 — Recheck shared-host and no-touch gates.
 
 ## Risk Assessment
 

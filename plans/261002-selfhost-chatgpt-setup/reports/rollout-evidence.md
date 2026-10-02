@@ -119,3 +119,35 @@ Probed: 2026-10-02 (5 samples per hostname, no redirect follow)
 3. **Rollback local release:** Run `sudo /opt/cloud-harness-mcp/deploy/scripts/rollback-release.sh`.
 4. **Cloudflare recovery:** Preserve Tunnel route; rollback Access/OAuth rules via Cloudflare Dashboard.
 5. **Full host recovery (last resort):** Restore Hostinger snapshot with operator authorization if OS filesystem is corrupted.
+
+---
+
+## 6. Phase 3 Installation & Operational Acceptance (VERIFIED)
+
+- **Deployed Commit SHA**: `ae2a1e25d8df72b849804258f3e3356c4ca2a107` (verified on host detached HEAD)
+- **Image Builds (6/6)**:
+  - `cloud-harness-executor:local`: Built
+  - `cloud-harness-runner:local`: Built
+  - `cloud-harness-model-gateway:local`: Built
+  - `cloud-harness-network-guard:local`: Built
+  - `cloud-harness-agent:local`: Built
+  - `cloud-harness-api:local`: Built
+- **Canary Test**:
+  - `deploy-canary-network-profile=instance-default`
+  - `deploy-canary-posture=profile:network-none default:network-none`
+  - `deploy-canary=pass`
+- **Docker Services Status**: All 7 containers up & healthy:
+  - `cloud-harness-mcp-ingress-1`: Up (healthy), bound to `127.0.0.1:3100->3100/tcp` (loopback only)
+  - `cloud-harness-mcp-api-1`: Up (healthy)
+  - `cloud-harness-mcp-runner-1`: Up (healthy)
+  - `cloud-harness-mcp-provisioning-proxy-1`: Up
+  - `cloud-harness-mcp-model-gateway-1`: Up (healthy)
+  - `cloud-harness-mcp-cloudflared-1`: Up, connected via QUIC & HTTP/2 to Cloudflare Edge
+  - Keepalive containers: Up
+- **Cloudflare Zero Trust Connector Status**:
+  - Tunnel `cloud-harness-codepod`: **Healthy** (Uptime: 2+ minutes)
+- **Zero Regression on Existing Sites**:
+  - `yourfitnature.com`: HTTP 200 (1266 ms, stable)
+  - `www.yourfitnature.com`: HTTP 301 (912 ms, stable)
+  - `srv1281807.hstgr.cloud`: HTTP 200 (1400 ms, stable)
+  - Public `https://mcp.codepod.site`: HTTP 401 (protected by Access Managed OAuth)
