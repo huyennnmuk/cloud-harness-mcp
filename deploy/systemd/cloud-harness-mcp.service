@@ -13,6 +13,7 @@ Environment=HOST_STATE_ROOT=/var/lib/cloud-harness/state
 Environment=HOST_ARTIFACT_ROOT=/var/lib/cloud-harness/artifacts
 # Prefer the installed wrapper. A release whose unit is installed by an on-host deploy
 # script that predates the wrapper still starts through the copy in its own checkout.
+ExecStartPre=/usr/local/sbin/cloud-harness-reconcile-dependency-egress /etc/cloud-harness-mcp/runtime.env
 ExecStart=/bin/bash -c 'if [ -x /usr/local/sbin/cloud-harness-service-compose ]; then exec /usr/local/sbin/cloud-harness-service-compose up --remove-orphans; fi; exec /bin/bash deploy/scripts/service-compose.sh up --remove-orphans'
 ExecStop=/bin/bash -c 'if [ -x /usr/local/sbin/cloud-harness-service-compose ]; then exec /usr/local/sbin/cloud-harness-service-compose down; fi; exec /bin/bash deploy/scripts/service-compose.sh down'
 Restart=on-failure

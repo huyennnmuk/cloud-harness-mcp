@@ -9,17 +9,22 @@ Cloud Harness MCP is designed for straightforward self-hosting on any modern Lin
 
 ## Deployment Architectures
 
-### 1. 1-Click Automated Deployment (Caddy / Cloudflare Tunnel)
+### 1. Reviewed-release deployment (Caddy / Cloudflare Tunnel)
 
-For a modern, zero-fuss self-hosted deployment on standard Linux (Ubuntu 24.04 LTS):
+Use a local checkout so the installer, Compose files, systemd unit, and first
+deployment all come from the same reviewed commit:
 
 ```bash
-# Single-command install with Let's Encrypt TLS (Caddy)
-curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash
+git clone https://github.com/bestagentkits/cloud-harness-mcp.git
+cd cloud-harness-mcp
+git fetch origin main
+RELEASE_SHA="$(git rev-parse origin/main)"
+git checkout --detach "$RELEASE_SHA"
+sudo ./scripts/install.sh --release-sha "$RELEASE_SHA" --ingress caddy
 ```
 
 - **Caddy Ingress:** Automatically requests and renews Let's Encrypt TLS certificates, proxying traffic to the loopback ingress `127.0.0.1:3100`.
-- **Cloudflare Tunnel:** Connects `cloudflared` directly to the `ingress` network, exposing zero host listening ports.
+- **Cloudflare Tunnel:** Uses `--tunnel-token-file` and a direct read-only container mount; the token never enters Compose interpolation, environment, or argv.
 - **Management:** Uses the `cloudharness` CLI (`cloudharness status`, `cloudharness logs`, `cloudharness token`).
 
 ### 2. Traditional NGINX Reverse Proxy Runbook

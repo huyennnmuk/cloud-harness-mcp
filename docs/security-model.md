@@ -44,6 +44,16 @@ mounts. The exact container flags are owned by
 Docker-backed checks live in
 [`test/integration/docker-sandbox.docker.test.ts`](../test/integration/docker-sandbox.docker.test.ts).
 
+Cloudflare Tunnel is an optional transport owner on the ingress network. Its
+credential exists only in the root-controlled
+`/etc/cloud-harness-mcp/cloudflare-tunnel-token` file and cloudflared process
+memory. Compose mounts that file directly read-only; it is not interpolated
+into environment or command values. The cloudflared image is pinned by release
+tag and immutable manifest digest. Model-provider credentials follow a
+different boundary: only the dynamic Model Gateway receives them over the
+runner control channel; API, ingress, executors, and static production mounts
+do not.
+
 Rootful Docker and a shared kernel remain the principal limitation. A runner
 compromise can control the host, and a container escape crosses the executor
 boundary. Do not expose this design to mutually distrustful tenants. That
@@ -173,19 +183,24 @@ than principal state, so in a deployment that serves more than one principal any
 authenticated dashboard principal can change the posture of future workspaces.
 That matches the single-owner threat model this harness is built for; a
 multi-tenant deployment needs an admin gate on the settings mutation before it
-can rely on per-principal policy. The `dependency-access` profile is enforced below MCP
-tool policy: the executor attaches only to a dedicated managed Docker bridge
-(`chm-egress0`) with inter-container communication disabled and Docker's
-default masquerade off, and a transactional host firewall (installed via a
-single `iptables-restore` commit and verified through an ephemeral
-`NET_ADMIN`-only network-guard container) permits only public DNS and public
-TCP 80/443. The managed jump is the first rule of both `INPUT` and
-`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+can rely on per-principal policy. The `dependency-access` profile is enforced
+below MCP tool policy: the executor attaches only to a dedicated managed Docker
+bridge (`chm-egress0`) with inter-container communication disabled and Docker's
+default masquerade off. Before every systemd service start, root-owned
+reconciliation validates the complete IPv4 filter and NAT restore inputs,
+applies those tables sequentially, and attests the exact managed chains,
+first-position jumps, NAT rule, and Docker bridge. It makes no cross-table or
+IPv4/IPv6 atomicity claim; IPv6 is disabled on the bridge. On
+failure it restores only the prior Cloud Harness-owned chains, jumps, and any
+newly created managed bridge, leaving unrelated host firewall state alone.
+Service startup then fails closed.
+
+The runner independently verifies the same network and ordered host rules
+before every dependency executor start and during periodic reaper
+reconciliation. Forbidden destination classes — loopback-to-host,
 Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
-cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
-IPv6 is disabled on the bridge. The runner attests the Docker network and the
-exact ordered host ruleset before every dependency executor start and during
-periodic reaper reconciliation; on drift it fences the workspace to
+cloud-metadata (`169.254.169.254`) — are rejected before public DNS and public
+TCP 80/443 are allowed. On drift the runner fences the workspace to
 `NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
 after policy reconciliation. If attestation is unavailable the profile fails
 closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge

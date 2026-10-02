@@ -1788,20 +1788,25 @@
           </div>
           <div class="client-content-panel" id="installContent" role="tabpanel" tabindex="0">
             <div>
-              <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">1-Click Linux VPS Server (Caddy TLS)</h3>
+              <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">Reviewed Linux VPS release (Caddy TLS)</h3>
               <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1rem;">
-                Single-command interactive installer for Ubuntu 24.04 / Debian 12 with automatic Let's Encrypt TLS reverse proxy to loopback <code>127.0.0.1:3100</code>.
+                Local-checkout installer for Ubuntu 24.04 / Debian 12 with an exact merged release SHA and automatic Let's Encrypt TLS to loopback <code>127.0.0.1:3100</code>.
               </p>
               <ul class="arch-specs" style="border: none; padding: 0; margin-bottom: 1rem;">
+                <li><span>→</span> Verifies and checks out the selected release before deployment</li>
                 <li><span>→</span> Generates high-entropy cryptographic keys & secret keyring</li>
-                <li><span>→</span> Enables systemd auto-restart service</li>
-                <li><span>→</span> Includes <code>cloudharness</code> CLI (status, token view/rotate, upgrade)</li>
+                <li><span>→</span> Enables systemd auto-restart and network-policy pre-start</li>
               </ul>
-              <p style="font-size: 0.8rem; color: var(--text-dim);">Runs repository installer as root. Review source on <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" style="color: var(--cyan-glow); text-decoration: underline;">GitHub repository</a> first.</p>
+              <p style="font-size: 0.8rem; color: var(--text-dim);">Review the exact commit in the <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" style="color: var(--cyan-glow); text-decoration: underline;">GitHub repository</a> before running its installer as root.</p>
             </div>
             <div class="code-box">
               <button class="copy-btn" onclick="copySnippet('active-install-box')">Copy</button>
-              <pre id="active-install-box" style="overflow-x: auto; color: var(--text-bright);">curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash</pre>
+              <pre id="active-install-box" style="overflow-x: auto; color: var(--text-bright);">git clone https://github.com/bestagentkits/cloud-harness-mcp.git
+cd cloud-harness-mcp
+git fetch origin main
+RELEASE_SHA="$(git rev-parse origin/main)"
+git checkout --detach "$RELEASE_SHA"
+sudo ./scripts/install.sh --release-sha "$RELEASE_SHA" --ingress caddy</pre>
             </div>
           </div>
         </div>
@@ -2067,26 +2072,26 @@
         const container = document.getElementById('installContent');
         const installConfigs = {
           'server-caddy': {
-            title: "1-Click Linux VPS Server (Caddy TLS)",
-            desc: "Single-command interactive installer for Ubuntu 24.04 / Debian 12 with automatic Let's Encrypt TLS reverse proxy to loopback 127.0.0.1:3100.",
+            title: "Reviewed Linux VPS release (Caddy TLS)",
+            desc: "Local-checkout installer for Ubuntu 24.04 / Debian 12 with an exact merged SHA and automatic Let's Encrypt TLS to loopback 127.0.0.1:3100.",
             specs: [
+              "Checks out and verifies the selected origin/main release",
               "Generates high-entropy cryptographic keys & secret keyring",
-              "Enables systemd auto-restart service",
-              "Includes cloudharness CLI (status, token view/rotate, upgrade)"
+              "Installs systemd service and network-policy pre-start"
             ],
-            note: 'Runs repository installer as root. Review source on GitHub first.',
-            code: `curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash`
+            note: 'Review the exact commit before running its installer as root.',
+            code: `git clone https://github.com/bestagentkits/cloud-harness-mcp.git\ncd cloud-harness-mcp\ngit fetch origin main\nRELEASE_SHA="$(git rev-parse origin/main)"\ngit checkout --detach "$RELEASE_SHA"\nsudo ./scripts/install.sh --release-sha "$RELEASE_SHA" --ingress caddy`
           },
           'server-tunnel': {
-            title: "1-Click Linux VPS Server (Cloudflare Tunnel)",
-            desc: "Zero-port installation attaching cloudflared directly to the loopback ingress network without opening inbound firewall ports.",
+            title: "Reviewed Linux VPS release (Cloudflare Tunnel)",
+            desc: "Zero-port transport with an exact merged SHA and a direct read-only Tunnel token file mount.",
             specs: [
               "Zero public host listening ports",
-              "Direct internal routing to ingress proxy on 127.0.0.1:3100",
-              "Enforces tunnel token validation and public host security"
+              "Immutable cloudflared tag and manifest digest",
+              "Tunnel token absent from Compose interpolation, environment, and argv"
             ],
-            note: 'The installer prompts for your Cloudflare Tunnel token via hidden input (zero history leak).',
-            code: `curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash -s -- \\\n  --ingress tunnel \\\n  --domain mcp.example.com`
+            note: 'Create a protected single-line token file; never pass the value as a command argument.',
+            code: `git clone https://github.com/bestagentkits/cloud-harness-mcp.git\ncd cloud-harness-mcp\ngit fetch origin main\nRELEASE_SHA="$(git rev-parse origin/main)"\ngit checkout --detach "$RELEASE_SHA"\nsudo ./scripts/install.sh --release-sha "$RELEASE_SHA" --ingress tunnel --domain mcp.example.com --tunnel-token-file /root/cloudflare-tunnel-token --non-interactive`
           },
           'agent-skill': {
             title: "Companion Agent Skill (Portable)",

@@ -131,7 +131,9 @@ export function createGatewayRuntime(
     profiles: new Map(config.profiles),
     credentials: new Map(),
     snapshotDigest: '',
-    gatewayBootId
+    gatewayBootId,
+    sequence: 0,
+    generation: 0
   };
 
   const cancelAndDrain = async (requestId: string): Promise<boolean> => {

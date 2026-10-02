@@ -51,13 +51,18 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     const gateway = createGatewayRuntime(config);
     runtimes.push(gateway);
     await gateway.listen();
+    const address = gateway.httpServer.address();
+    if (address === null || typeof address === 'string') throw new Error('gateway address unavailable');
+    const health = await fetch(`http://127.0.0.1:${address.port}/healthz`);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toEqual({ ok: true });
 
     // 1. Initial digest query
     const initialDigest = await sendControl(socketPath, { operation: 'digest' });
     expect(initialDigest.ok).toBe(true);
-    const initialData = initialDigest.digest as { activeProfileCount: number };
+    const initialData = initialDigest.digest as { activeProfileCount: number; activeCredentialCount: number };
     expect(initialData.activeProfileCount).toBe(0);
-
+    expect(initialData.activeCredentialCount).toBe(0);
     // 2. Apply snapshot with dynamic credential and profile
     const applyRes = await sendControl(socketPath, {
       operation: 'apply_snapshot',
@@ -110,6 +115,53 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     expect(updatedDigest.ok).toBe(true);
     const digestData = updatedDigest.digest as { activeLeaseCount: number };
     expect(digestData.activeLeaseCount).toBe(1);
+
+    // 5. A rejected replacement must not partially mutate the active snapshot.
+    const rejected = await sendControl(socketPath, {
+      operation: 'apply_snapshot',
+      sequence: 2,
+      generation: 2,
+      credentials: {
+        cred_rejected: {
+          provider: 'openai',
+          authMode: 'bearer',
+          secret: 'sk-rejected-test-key'
+        }
+      },
+      profiles: {
+        rev_rejected: {
+          id: 'rev_rejected',
+          credentialId: 'missing-credential',
+          upstreamUrl: 'https://api.openai.com/v1/chat/completions'
+        }
+      }
+    });
+    expect(rejected.ok).toBe(false);
+    const afterRejected = await sendControl(socketPath, { operation: 'digest' });
+    expect(afterRejected.digest).toMatchObject({
+      snapshotDigest: ackData.snapshotDigest,
+      activeProfileCount: 1,
+      activeCredentialCount: 1
+    });
+
+    // 6. Snapshot application is replacement, so an empty dashboard snapshot clears state.
+    const cleared = await sendControl(socketPath, {
+      operation: 'apply_snapshot',
+      sequence: 3,
+      generation: 3,
+      credentials: {},
+      profiles: {}
+    });
+    expect(cleared.ok).toBe(true);
+    expect(cleared.ack).toMatchObject({
+      activeProfileCount: 0,
+      activeCredentialCount: 0
+    });
+    const afterClear = await sendControl(socketPath, { operation: 'digest' });
+    expect(afterClear.digest).toMatchObject({
+      activeProfileCount: 0,
+      activeCredentialCount: 0
+    });
   });
 
   const productionSnapshot = (upstreamUrl: string, revisionId: string): Record<string, unknown> => ({
@@ -169,5 +221,85 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     expect(String(refused.error)).toContain('private or reserved');
     const digest = await sendControl(socketPath, { operation: 'digest' });
     expect((digest.digest as { activeProfileCount: number }).activeProfileCount).toBe(0);
+  });
+
+  it('rejects stale snapshot sequences and generations', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const gateway = createGatewayRuntime(config);
+    runtimes.push(gateway);
+    await gateway.listen();
+
+    const initial = await sendControl(socketPath, {
+      ...productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_v1'),
+      sequence: 5,
+      generation: 2
+    });
+    expect(initial.ok).toBe(true);
+
+    const staleSequence = await sendControl(socketPath, {
+      ...productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_v1'),
+      sequence: 4,
+      generation: 2
+    });
+    expect(staleSequence.ok).toBe(false);
+    expect(String(staleSequence.error)).toContain('stale snapshot revision');
+
+    const staleGeneration = await sendControl(socketPath, {
+      ...productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_v1'),
+      sequence: 10,
+      generation: 1
+    });
+    expect(staleGeneration.ok).toBe(false);
+    expect(String(staleGeneration.error)).toContain('stale snapshot revision');
+
+    const equalSequence = await sendControl(socketPath, {
+      ...productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_v1'),
+      sequence: 5,
+      generation: 2
+    });
+    expect(equalSequence.ok).toBe(false);
+    expect(String(equalSequence.error)).toContain('stale snapshot revision');
+
+    const newer = await sendControl(socketPath, {
+      ...productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_v1'),
+      sequence: 6,
+      generation: 2
+    });
+    expect(newer.ok).toBe(true);
+  });
+
+  it('rejects upstream URLs with queries, non-default ports, or unsupported downstream paths', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const gateway = createGatewayRuntime(config);
+    runtimes.push(gateway);
+    await gateway.listen();
+
+    const withQuery = await sendControl(socketPath, productionSnapshot(
+      'https://api.openai.com/v1/chat/completions?leak=1', 'rev_query'
+    ));
+    expect(withQuery.ok).toBe(false);
+    expect(String(withQuery.error)).toContain('without credentials, query, or fragment');
+
+    const withPort = await sendControl(socketPath, productionSnapshot(
+      'https://api.openai.com:8443/v1/chat/completions', 'rev_port'
+    ));
+    expect(withPort.ok).toBe(false);
+    expect(String(withPort.error)).toContain('default HTTPS port');
+
+    const invalidDownstream = {
+      ...productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_bad_downstream'),
+      sequence: 1,
+      generation: 1
+    };
+    (invalidDownstream.profiles as Record<string, any>).rev_bad_downstream.downstreamPath = '/unsupported/path';
+    const withBadDownstream = await sendControl(socketPath, invalidDownstream);
+    expect(withBadDownstream.ok).toBe(false);
+    expect(String(withBadDownstream.error)).toContain('unsupported downstreamPath');
   });
 });

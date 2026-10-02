@@ -1,13 +1,18 @@
 services:
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set for cloudflare tunnel ingress}
+    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/run/secrets/cloudflare-tunnel-token"]
     read_only: true
     user: "65534:65534"
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+    volumes:
+      - type: bind
+        source: ${CLOUD_HARNESS_CONFIG_DIR:-/etc/cloud-harness-mcp}/cloudflare-tunnel-token
+        target: /run/secrets/cloudflare-tunnel-token
+        read_only: true
     networks:
       - ingress
     logging:

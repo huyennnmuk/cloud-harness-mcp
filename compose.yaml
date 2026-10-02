@@ -146,16 +146,13 @@ services:
     restart: unless-stopped
     environment:
       MODEL_GATEWAY_MODE: production
+      MODEL_GATEWAY_DYNAMIC_MODE: "true"
       MODEL_GATEWAY_HOST: 0.0.0.0
       MODEL_GATEWAY_PORT: 3210
-      MODEL_GATEWAY_PROFILES_FILE: /run/model-gateway-config/profiles.json
       MODEL_GATEWAY_CONTROL_SOCKET: /tmp/model-gateway-control.sock
       # Optional provider session header the gateway fills with the calling agent id,
       # for OpenAI-compatible providers that require a conversation identifier.
       MODEL_GATEWAY_SESSION_HEADER: ${MODEL_GATEWAY_SESSION_HEADER:-}
-    volumes:
-      - ${MODEL_GATEWAY_PROFILES_HOST_FILE:-./apps/model-gateway/profiles/production.example.json}:/run/model-gateway-config/profiles.json:ro
-      - ${MODEL_GATEWAY_PROVIDER_SECRET_FILE:-/etc/cloud-harness-model-gateway/provider-api-key}:/run/model-gateway-secrets/provider-api-key:ro
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=8m,mode=0700,uid=1000,gid=1000

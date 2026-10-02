@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -76,8 +76,10 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       `if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then sudo="sudo"; fi\n` +
       `$sudo iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true\n` +
       `$sudo iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -t nat -D POSTROUTING -s ${SUBNET} -j CHM-NAT-v1 2>/dev/null || true\n` +
       `$sudo iptables -w 10 -F CHM-INPUT-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-INPUT-v1 2>/dev/null || true\n` +
       `$sudo iptables -w 10 -F CHM-EGRESS-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-EGRESS-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -t nat -F CHM-NAT-v1 2>/dev/null || true; $sudo iptables -w 10 -t nat -X CHM-NAT-v1 2>/dev/null || true\n` +
       `docker network rm ${NETWORK} 2>/dev/null || true`
     ], { stdio: 'ignore' });
     if (service) await service.stop().catch(() => undefined);
@@ -136,6 +138,45 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       expect(text, `${probe.label} must not return 200`).not.toContain('200');
     }
   }, 180_000);
+
+  it('reconciles and re-attests an empty managed policy before a repeated service start', () => {
+    const runtimeEnv = join(directory, 'runtime.env');
+    writeFileSync(runtimeEnv, 'WORKSPACE_NETWORK_PROFILE=dependency-access\n', { mode: 0o600 });
+    execFileSync('bash', ['-c',
+      `sudo=""\n` +
+      `if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then sudo="sudo"; fi\n` +
+      `$sudo iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -t nat -D POSTROUTING -s ${SUBNET} -j CHM-NAT-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F CHM-INPUT-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-INPUT-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F CHM-EGRESS-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-EGRESS-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -t nat -F CHM-NAT-v1 2>/dev/null || true; $sudo iptables -w 10 -t nat -X CHM-NAT-v1 2>/dev/null || true`
+    ], { stdio: 'inherit' });
+
+    const reconciliationEnv = {
+      ...process.env,
+      CLOUD_HARNESS_FIREWALL_HELPER: join(process.cwd(), 'deploy/scripts/setup-dependency-firewall.sh'),
+      DEPENDENCY_NETWORK_NAME: NETWORK,
+      DEPENDENCY_BRIDGE_INTERFACE: BRIDGE_IF,
+      DEPENDENCY_BRIDGE_SUBNET: SUBNET,
+      DEPENDENCY_DNS_RESOLVERS: '8.8.8.8 1.1.1.1'
+    };
+    execFileSync('bash', ['deploy/scripts/reconcile-dependency-egress.sh', runtimeEnv], {
+      env: reconciliationEnv,
+      stdio: 'inherit'
+    });
+    execFileSync('bash', ['deploy/scripts/reconcile-dependency-egress.sh', runtimeEnv], {
+      env: reconciliationEnv,
+      stdio: 'inherit'
+    });
+    execFileSync('bash', ['-c',
+      `sudo=""\n` +
+      `if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then sudo="sudo"; fi\n` +
+      `$sudo iptables -w 10 -C INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1\n` +
+      `$sudo iptables -w 10 -C DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1\n` +
+      `$sudo iptables -w 10 -t nat -C POSTROUTING -s ${SUBNET} -j CHM-NAT-v1`
+    ], { stdio: 'inherit' });
+  }, 120_000);
 
   it('quarantines the workspace when the host firewall drifts and stops all containers', async () => {
     expect(depWorkspaceId).toBeDefined();

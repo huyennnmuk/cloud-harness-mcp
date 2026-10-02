@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -6,132 +6,221 @@ import { describe, expect, it } from 'vitest';
 
 const runtime = join(process.cwd(), 'deploy/scripts/release-runtime.sh');
 const deployScript = join(process.cwd(), 'deploy/scripts/deploy-release.sh');
-const previousSha = 'a'.repeat(40);
+const releaseSha = 'a'.repeat(40);
+const imageId = `sha256:${'b'.repeat(64)}`;
+const imageNames = ['api', 'runner', 'executor', 'network-guard', 'agent', 'model-gateway'];
 
-function runRollback(failureStep = 'none') {
-  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-rollback-'));
-  const trace = join(directory, 'trace');
-  const script = `
-set -u
-source "$1"
-state="$2"
-previous_sha="$3"
-backup_dir=/snapshot
-env_file=/runtime
-trace_path="$4"
-failure_step="$5"
-fails() { [[ $failure_step == "$1" ]]; }
-stop_release() { echo stop >> "$trace_path"; ! fails stop; }
-contain_failed_release() { echo contain >> "$trace_path"; }
-git() { echo "git:$*" >> "$trace_path"; ! fails checkout; }
-install_release_service_files() { echo service-files >> "$trace_path"; ! fails service-files; }
-restore_snapshot() { echo "restore:$1" >> "$trace_path"; ! fails restore; }
-compose() { echo "compose:$*" >> "$trace_path"; ! fails build; }
-systemctl() { echo "systemctl:$*" >> "$trace_path"; ! fails start; }
-wait_ready() { echo ready >> "$trace_path"; ! fails ready; }
-verify_running_images() { echo verify >> "$trace_path"; ! fails verify; }
-record_images() { echo "record:$1" >> "$trace_path"; ! fails record; }
-record_release_config() { echo config >> "$trace_path"; ! fails config; }
-( false; rollback )
-exit $?
-`;
-  const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory, previousSha, trace, failureStep], { encoding: 'utf8' });
-  return { ...result, trace: readFileSync(trace, 'utf8').trim().split('\n') };
+function runRuntime(body: string, args: string[] = [], env: NodeJS.ProcessEnv = {}) {
+  return spawnSync('bash', ['-c', `set -euo pipefail\nsource "$1"\nshift\n${body}`, 'bash', runtime, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env }
+  });
+}
+
+function resolveFixture(content?: string, symlink = false) {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ingress-'));
+  const path = join(directory, 'ingress.conf');
+  if (content !== undefined) {
+    const target = join(directory, 'target');
+    writeFileSync(target, content);
+    if (symlink) symlinkSync(target, path);
+    else writeFileSync(path, content);
+  }
+  return runRuntime('resolve_ingress_mode "$1"', [path]);
 }
 
 function runQuiescence(functionName: 'stop_release' | 'contain_failed_release', options: {
-  stop?: boolean; down?: boolean; active?: boolean; activeError?: boolean; containers?: boolean; psError?: boolean
+  stopFails?: boolean;
+  composeDownFails?: boolean;
+  unitActive?: boolean;
+  activeQueryFails?: boolean;
+  containersRemain?: boolean;
+  composePsFails?: boolean;
 }) {
   const script = `
 source "$1"
 systemctl() {
-  if [[ $1 == stop || $1 == disable ]]; then ${options.stop ? 'return 1' : 'return 0'}; fi
-  ${options.activeError ? 'return 4' : options.active ? 'return 0' : 'return 3'}
+  if [[ $1 == stop || $1 == disable ]]; then ${options.stopFails ? 'return 1' : 'return 0'}; fi
+  ${options.activeQueryFails ? 'return 4' : options.unitActive ? 'return 0' : 'return 3'}
 }
 compose() {
-  if [[ $1 == down ]]; then ${options.down ? 'return 1' : 'return 0'}; fi
-  ${options.psError ? 'return 1' : ':'}
-  ${options.containers ? 'echo live-container' : ':'}
+  if [[ $1 == down ]]; then ${options.composeDownFails ? 'return 1' : 'return 0'}; fi
+  ${options.composePsFails ? 'return 1' : ':'}
+  ${options.containersRemain ? 'echo live-container' : ':'}
 }
 ${functionName}
 `;
   return spawnSync('bash', ['-c', script, 'bash', runtime], { encoding: 'utf8' }).status;
 }
 
-function runConfigRestore() {
-  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-config-restore-'));
-  const script = `
-set -euo pipefail
-source "$1"
-state="$2/state"
-config_root="$2/config"
-snapshot="$2/snapshot"
-mkdir -p "$state" "$config_root" "$snapshot/config"
-printf current > "$config_root/mode"
-printf previous > "$snapshot/config/mode"
-restore_config_snapshot "$snapshot"
-printf '%s|' "$(cat "$config_root/mode")"
-record_release_config
-cat "$state/release-config-current/mode"
-`;
-  return spawnSync('bash', ['-c', script, 'bash', runtime, directory], { encoding: 'utf8' });
+function writeExecutable(path: string, content: string): void {
+  writeFileSync(path, content, { mode: 0o755 });
 }
 
-describe.skipIf(process.platform === 'win32')('release rollback orchestration', () => {
-  it('takes a nonblocking host lock before touching the shared deployment checkout', () => {
-    const source = readFileSync(deployScript, 'utf8');
-    const lock = source.indexOf('flock -n 9');
-    expect(source).toContain('install -d -o root -g root -m 0700 "$state"');
-    expect(source).toContain('deploy_lock="$state/deploy.lock"');
-    expect(lock).toBeGreaterThan(source.indexOf('exec 9>"$deploy_lock"'));
-    expect(source.indexOf('exit 75', lock)).toBeGreaterThan(lock);
-    expect(lock).toBeLessThan(source.indexOf('git fetch --force --prune origin main'));
-  });
-
-  it('moves all promoted image records including network-guard', () => {
-    const deploySource = readFileSync(deployScript, 'utf8');
-    expect(deploySource).toContain('mv "$state/release-new-network-guard-image" "$state/release-network-guard-image"');
-    const runtimeSource = readFileSync(runtime, 'utf8');
-    expect(runtimeSource).toContain('docker image inspect cloud-harness-network-guard:local');
-  });
-
-  it('restores and records the coherent runtime configuration snapshot', () => {
-    const result = runConfigRestore();
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('previous|previous');
-  });
-
-  it('quiesces the active release before restoring and starts verified previous images', () => {
-    const result = runRollback();
-    expect(result.status).toBe(1);
-    expect(result.trace).toEqual([
-      'stop',
-      `git:checkout --detach --force ${previousSha}`,
-      'service-files',
-      'restore:/snapshot',
-      'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway',
-      'systemctl:enable --now cloud-harness-mcp.service',
-      'ready',
-      'verify',
-      'config',
-      'record:release'
-    ]);
-  });
-
-  it('never restores state when quiescence cannot be established', () => {
-    const result = runRollback('stop');
-    expect(result.status).toBe(70);
-    expect(result.trace).toEqual(['stop', 'contain']);
-    expect(result.stderr).toContain('rollback did not become healthy');
+describe.skipIf(process.platform === 'win32')('release deployment safety', () => {
+  it('strictly resolves missing and explicit ingress modes as data', () => {
+    expect(resolveFixture().stdout.trim()).toBe('legacy-managed-nginx');
+    for (const mode of ['tunnel', 'caddy', 'custom']) {
+      const result = resolveFixture(`# owner-selected ingress\nINGRESS_MODE=${mode}\n`);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(mode);
+    }
   });
 
   it.each([
-    ['systemd stop', { stop: true }],
-    ['Compose down', { down: true }],
-    ['still-active systemd unit', { active: true }],
-    ['systemd state query', { activeError: true }],
-    ['remaining managed container', { containers: true }],
-    ['Compose state query', { psError: true }]
+    ['duplicate assignment', 'INGRESS_MODE=tunnel\nINGRESS_MODE=custom\n'],
+    ['unknown key', 'OTHER=value\n'],
+    ['shell syntax', 'INGRESS_MODE=$(touch /tmp/never)\n'],
+    ['unknown mode', 'INGRESS_MODE=nginx\n'],
+    ['missing assignment', '# comments only\n']
+  ])('rejects malformed ingress: %s', (_label, content) => {
+    expect(resolveFixture(content).status).not.toBe(0);
+  });
+
+  it('rejects a symlinked ingress configuration', () => {
+    expect(resolveFixture('INGRESS_MODE=tunnel\n', true).status).not.toBe(0);
+  });
+
+  it('runs the nginx upgrader only for legacy managed nginx', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ingress-prepare-'));
+    mkdirSync(join(directory, 'deploy/scripts'), { recursive: true });
+    writeExecutable(join(directory, 'deploy/scripts/upgrade-nginx-dashboard.sh'), '#!/usr/bin/env bash\nprintf "upgrade\\n" >> "$TRACE"\n');
+    const script = `
+set -euo pipefail
+cd "$2"
+source "$1"
+prepare_access_ingress legacy-managed-nginx
+prepare_access_ingress tunnel
+prepare_access_ingress caddy
+prepare_access_ingress custom
+`;
+    const trace = join(directory, 'trace');
+    const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory], {
+      encoding: 'utf8', env: { ...process.env, TRACE: trace }
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(trace, 'utf8')).toBe('upgrade\n');
+  });
+
+  it('passes a Tunnel token only by protected file path and emits no token bytes', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-tunnel-wrapper-'));
+    const config = join(directory, 'config');
+    const state = join(directory, 'state');
+    const bin = join(directory, 'bin');
+    const trace = join(directory, 'trace');
+    const token = 'disposable-tunnel-token-sentinel';
+    mkdirSync(config);
+    mkdirSync(state);
+    mkdirSync(bin);
+    writeFileSync(join(config, 'ingress.conf'), 'INGRESS_MODE=tunnel\n');
+    writeFileSync(join(config, 'cloudflare-tunnel-token'), `${token}\n`, { mode: 0o640 });
+    writeFileSync(join(config, 'runtime.env'), 'AUTH_MODE=owner-bearer\n');
+    writeExecutable(join(bin, 'stat'), `#!/usr/bin/env bash
+format=$2
+path="\${!#}"
+if [[ $format == '%u:%g:%a' ]]; then printf '0:0:700\\n'; exit 0; fi
+size=$(/usr/bin/stat -c %s -- "$path")
+printf '0:65534:640:%s\\n' "$size"
+`);
+    writeExecutable(join(bin, 'docker'), `#!/usr/bin/env bash
+printf '%s|%s\\n' "$CLOUD_HARNESS_CONFIG_DIR" "$*" >> "$TRACE"
+printf '{"services":{"cloudflared":{"command":["tunnel","--no-autoupdate","run","--token-file","/run/secrets/cloudflare-tunnel-token"]}}}\\n'
+`);
+    const result = runRuntime(`
+config_root="$1"
+state="$2"
+env_file="$config_root/runtime.env"
+resolved_ingress_mode=tunnel
+compose config --format json
+`, [config, state], { PATH: `${bin}:${process.env.PATH}`, TRACE: trace });
+    const captured = `${result.stdout}${result.stderr}${readFileSync(trace, 'utf8')}`;
+    expect(result.status, result.stderr).toBe(0);
+    expect(captured).not.toContain(token);
+    expect(readFileSync(trace, 'utf8')).toContain(`${config}|compose -f compose.yaml -f compose.production.yaml -f deploy/cloudflare-tunnel/compose.tunnel.yaml config --format json`);
+  });
+
+  it('runs the Access canary for Tunnel ingress without loading the Tunnel overlay or nginx tooling', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-tunnel-canary-'));
+    const config = join(directory, 'config');
+    const state = join(directory, 'state');
+    const bin = join(directory, 'bin');
+    const trace = join(directory, 'trace');
+    mkdirSync(config);
+    mkdirSync(state);
+    mkdirSync(bin);
+    writeFileSync(join(config, 'runtime.env'), 'AUTH_MODE=cloudflare-access\n');
+    writeFileSync(join(config, 'canary-credentials'), [
+      'MCP_CANARY_URL=https://mcp.example.test/mcp',
+      'MCP_CANARY_ACCESS_CLIENT_ID=disposable-client-id',
+      'MCP_CANARY_ACCESS_CLIENT_SECRET=disposable-client-secret',
+      ''
+    ].join('\n'));
+    writeExecutable(join(bin, 'docker'), '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$TRACE"\n');
+    const result = runRuntime(`
+config_root="$1"
+state="$2"
+env_file="$config_root/runtime.env"
+canary_credentials_file="$config_root/canary-credentials"
+run_release_canary tunnel
+`, [config, state], { PATH: `${bin}:${process.env.PATH}`, TRACE: trace });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(trace, 'utf8')).toContain('compose -f compose.yaml -f compose.production.yaml run --rm --no-deps');
+    expect(readFileSync(trace, 'utf8')).not.toContain('compose.tunnel.yaml');
+    expect(`${result.stdout}${result.stderr}${readFileSync(trace, 'utf8')}`).not.toContain('disposable-client-secret');
+  });
+
+  it('fails malformed ingress before stop, backup, build, or service mutation', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-preflight-'));
+    const bin = join(directory, 'bin');
+    const config = join(directory, 'config');
+    const state = join(directory, 'state');
+    const trace = join(directory, 'trace');
+    mkdirSync(bin);
+    mkdirSync(config);
+    writeFileSync(join(config, 'runtime.env'), 'AUTH_MODE=owner-bearer\nMCP_BEARER_TOKEN=disposable-owner-token\n', { mode: 0o600 });
+    writeFileSync(join(config, 'ingress.conf'), 'INGRESS_MODE=$(false)\n', { mode: 0o600 });
+    writeExecutable(join(bin, 'git'), `#!/usr/bin/env bash
+if [[ $1 == remote && $2 == get-url ]]; then echo https://github.com/bestagentkits/cloud-harness-mcp.git; exit 0; fi
+if [[ $1 == archive ]]; then exec /usr/bin/tar -C "$SOURCE" -cf - compose.yaml compose.production.yaml deploy/cloudflare-tunnel/compose.tunnel.yaml deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/service-compose.sh deploy/scripts/setup-dependency-firewall.sh deploy/scripts/reconcile-dependency-egress.sh deploy/systemd/cloud-harness-mcp.service; fi
+exit 0
+`);
+    writeExecutable(join(bin, 'install'), `#!/usr/bin/env bash
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|-g|-m) shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+exec /usr/bin/install "\${args[@]}"
+`);
+    for (const command of ['docker', 'systemctl']) {
+      writeExecutable(join(bin, command), `#!/usr/bin/env bash\nprintf '${command}:%s\\n' "$*" >> "$TRACE"\nexit 0\n`);
+    }
+    const result = spawnSync('bash', [deployScript, releaseSha], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        TRACE: trace,
+        SOURCE: process.cwd(),
+        CLOUD_HARNESS_STATE_DIR: state,
+        CLOUD_HARNESS_CONFIG_DIR: config,
+        CLOUD_HARNESS_REPO_DIR: process.cwd()
+      }
+    });
+    expect(result.status).not.toBe(0);
+    expect(existsSync(trace) ? readFileSync(trace, 'utf8') : '').toBe('');
+    expect(existsSync(join(state, 'rollback-current'))).toBe(false);
+  });
+
+  it.each([
+    ['systemd stop', { stopFails: true }],
+    ['Compose down', { composeDownFails: true }],
+    ['still-active systemd unit', { unitActive: true }],
+    ['systemd state query', { activeQueryFails: true }],
+    ['remaining managed container', { containersRemain: true }],
+    ['Compose state query', { composePsFails: true }]
   ])('fails quiescence when %s fails', (_name, options) => {
     expect(runQuiescence('stop_release', options)).toBe(1);
     expect(runQuiescence('contain_failed_release', options)).toBe(1);
@@ -142,19 +231,148 @@ describe.skipIf(process.platform === 'win32')('release rollback orchestration', 
     expect(runQuiescence('contain_failed_release', {})).toBe(0);
   });
 
-  it.each([
-    ['checkout', ['stop', `git:checkout --detach --force ${previousSha}`, 'contain']],
-    ['service-files', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'contain']],
-    ['restore', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'contain']],
-    ['build', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'contain']],
-    ['start', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'contain']],
-    ['ready', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'contain']],
-    ['verify', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'contain']],
-    ['config', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'contain']],
-    ['record', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'record:release', 'contain']]
-  ])('does not advance after a failed %s transition', (step, expectedTrace) => {
-    const result = runRollback(step);
+  it('creates, atomically publishes, validates, and restores a same-SHA coherent snapshot', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-snapshot-'));
+    const state = join(directory, 'state-root');
+    const config = join(directory, 'config');
+    const bin = join(directory, 'bin');
+    mkdirSync(join(state, 'state'), { recursive: true });
+    mkdirSync(join(state, 'artifacts'), { recursive: true });
+    mkdirSync(join(state, 'backups'), { recursive: true });
+    mkdirSync(config);
+    mkdirSync(join(state, 'release-config-current'));
+    mkdirSync(bin);
+    writeFileSync(join(config, 'mode'), 'owner-bearer');
+    writeFileSync(join(state, 'state/database'), 'state-before');
+    writeFileSync(join(state, 'artifacts/payload'), 'artifact-before');
+    writeFileSync(join(state, 'release-config-current/mode'), 'owner-bearer');
+    for (const name of imageNames) writeFileSync(join(state, `release-${name}-image`), `${imageId}\n`);
+    writeExecutable(join(bin, 'docker'), '#!/usr/bin/env bash\nexit 0\n');
+
+    const result = runRuntime(`
+state="$1"
+config_root="$2"
+snapshot="$state/backups/cloud-harness-test"
+create_snapshot "$snapshot" "$3"
+publish_rollback_snapshot "$snapshot"
+printf changed > "$config_root/mode"
+printf changed > "$state/state/database"
+printf changed > "$state/artifacts/payload"
+restore_snapshot "$snapshot"
+printf '%s|%s|%s|%s' "$(cat "$config_root/mode")" "$(cat "$state/state/database")" "$(cat "$state/artifacts/payload")" "$(resolve_rollback_snapshot)"
+`, [state, config, releaseSha], { PATH: `${bin}:${process.env.PATH}` });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`owner-bearer|state-before|artifact-before|${state}/backups/cloud-harness-test`);
+  });
+
+  it('rejects a corrupt rollback snapshot', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-corrupt-snapshot-'));
+    const state = join(directory, 'state-root');
+    const config = join(directory, 'config');
+    const bin = join(directory, 'bin');
+    mkdirSync(join(state, 'state'), { recursive: true });
+    mkdirSync(join(state, 'artifacts'), { recursive: true });
+    mkdirSync(join(state, 'backups'), { recursive: true });
+    mkdirSync(join(state, 'release-config-current'));
+    mkdirSync(config);
+    mkdirSync(bin);
+    writeFileSync(join(config, 'mode'), 'owner-bearer');
+    writeFileSync(join(state, 'release-config-current/mode'), 'owner-bearer');
+    for (const name of imageNames) writeFileSync(join(state, `release-${name}-image`), `${imageId}\n`);
+    writeExecutable(join(bin, 'docker'), '#!/usr/bin/env bash\nexit 0\n');
+    const result = runRuntime(`
+state="$1"
+config_root="$2"
+snapshot="$state/backups/cloud-harness-test"
+create_snapshot "$snapshot" "$3"
+printf corrupt >> "$snapshot/config.tar"
+if validate_snapshot "$snapshot"; then exit 9; fi
+`, [state, config, releaseSha], { PATH: `${bin}:${process.env.PATH}` });
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('restores snapshot state and exact images before start, readiness, and canary', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-rollback-order-'));
+    const trace = join(directory, 'trace');
+    const script = `
+set -euo pipefail
+source "$1"
+CLOUD_HARNESS_ROLLBACK_RELOAD_RUNTIME=false
+state="$2"
+config_root=/config
+env_file=/config/runtime.env
+canary_credentials_file=/config/canary
+trace="$3"
+prior_sha="$4"
+validate_snapshot() { echo validate >> "$trace"; }
+snapshot_manifest_value() { [[ $2 == kind ]] && echo release || echo "$prior_sha"; }
+stop_release() { echo stop >> "$trace"; }
+git() { echo "git:$*" >> "$trace"; }
+install_release_service_files() { echo service-files >> "$trace"; }
+restore_snapshot() { echo restore >> "$trace"; }
+restore_snapshot_images() { echo images >> "$trace"; }
+resolve_ingress_mode() { echo custom; }
+systemctl() { echo "systemctl:$*" >> "$trace"; }
+wait_ready() { echo ready >> "$trace"; }
+verify_running_images() { echo verify >> "$trace"; }
+run_release_canary() { echo "canary:$1" >> "$trace"; }
+record_release_generation() { echo "generation:$1" >> "$trace"; }
+rollback_to_snapshot /snapshot
+`;
+    mkdirSync(directory, { recursive: true });
+    const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory, trace, releaseSha], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
+      'validate',
+      'stop',
+      `git:checkout --detach --force ${releaseSha}`,
+      'git:status --porcelain --untracked-files=all',
+      'service-files',
+      'restore',
+      'images',
+      'systemctl:enable --now cloud-harness-mcp.service',
+      'ready',
+      'verify',
+      'canary:custom',
+      `generation:${releaseSha}`
+    ]);
+  });
+
+  it('automatically restores the deployment snapshot when the Access canary fails', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-canary-rollback-'));
+    const trace = join(directory, 'trace');
+    const script = `
+set -u
+source "$1"
+trace="$3"
+backup_dir=/snapshot
+previous_sha="$2"
+run_release_canary() { echo canary >> "$trace"; return 17; }
+rollback_to_snapshot() { echo "restore:$1" >> "$trace"; }
+contain_failed_release() { echo contain >> "$trace"; }
+trap rollback ERR
+run_release_canary tunnel
+`;
+    const result = spawnSync('bash', ['-c', script, 'bash', runtime, releaseSha, trace], { encoding: 'utf8' });
+    expect(result.status).toBe(17);
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(['canary', 'restore:/snapshot']);
+  });
+
+  it('contains the service when automatic snapshot restoration fails', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-rollback-contain-'));
+    const trace = join(directory, 'trace');
+    const script = `
+set -u
+source "$1"
+trace="$3"
+backup_dir=/snapshot
+previous_sha="$2"
+rollback_to_snapshot() { echo restore >> "$trace"; return 1; }
+contain_failed_release() { echo contain >> "$trace"; }
+(false; rollback)
+`;
+    const result = spawnSync('bash', ['-c', script, 'bash', runtime, releaseSha, trace], { encoding: 'utf8' });
     expect(result.status).toBe(70);
-    expect(result.trace).toEqual(expectedTrace);
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(['restore', 'contain']);
   });
 });

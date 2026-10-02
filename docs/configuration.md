@@ -117,18 +117,19 @@ public TCP 80/443 only, while a Linux host firewall (attested by the runner
 before each dependency executor starts) blocks loopback-to-host,
 Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It is not
 an allowlist or DLP boundary and still permits exfiltration to public endpoints.
-Host firewall attestation is a hard prerequisite: provision the firewall with
-`deploy/scripts/setup-dependency-firewall.sh` and confirm readiness from the
-Settings page before relying on egress. If attestation fails,
-`dependency-access` fails closed (`DEPENDENCY_EGRESS_UNAVAILABLE`, HTTP 503) and
-is never silently downgraded to `network-none`. `network-none` remains available
-as the per-workspace or instance-wide opt-out that blocks all executor egress;
-existing deployments that pin `WORKSPACE_NETWORK_PROFILE` keep that value until
-the operator changes it in Settings or edits the variable.
-`DEPENDENCY_DNS_RESOLVERS`, `DEPENDENCY_BRIDGE_SUBNET`,
-`DEPENDENCY_BRIDGE_INTERFACE`, and `DEPENDENCY_NETWORK_NAME` configure the
-managed bridge and firewall. The legacy `WORKSPACE_NETWORK_MODE` variable is
-rejected at startup. The precedence and fail-closed behavior are owned by
+Systemd reconciles this host policy before every service start when
+`WORKSPACE_NETWORK_PROFILE=dependency-access`. The pre-start helper creates or
+inspects the managed bridge, applies only the Cloud Harness-owned IPv4 chains
+and jumps, and attests the exact result. Failure blocks startup with
+`DEPENDENCY_EGRESS_UNAVAILABLE` and restores the prior managed footprint;
+`network-none` performs no Docker or firewall mutation. The runner repeats
+attestation before each dependency executor start and never silently
+downgrades the profile. `DEPENDENCY_DNS_RESOLVERS`,
+`DEPENDENCY_BRIDGE_SUBNET`, `DEPENDENCY_BRIDGE_INTERFACE`, and
+`DEPENDENCY_NETWORK_NAME` configure the runner's matching attestation contract.
+The legacy `WORKSPACE_NETWORK_MODE` variable is rejected at startup. Host
+reconciliation is owned by `deploy/scripts/setup-dependency-firewall.sh` and
+`deploy/scripts/reconcile-dependency-egress.sh`; runtime attestation is owned by
 [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
 and
 [`apps/runner/src/network-profile-manager.ts`](../apps/runner/src/network-profile-manager.ts);
@@ -349,6 +350,15 @@ owned by [`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/
 and the gateway boundary is described in the [MCP gateway](mcp-gateway.md).
 
 ## Model gateway provider overrides
+
+Production Model Gateway runs with `MODEL_GATEWAY_DYNAMIC_MODE=true` and no
+static profile or provider-key mount. A fresh instance is healthy with an empty
+snapshot, but model-backed agent launch remains unavailable until an operator
+creates and activates a dashboard-managed profile. The runner sends encrypted
+provider credentials and active profile revisions over the existing private
+Docker control channel. Snapshot application replaces the complete in-memory
+credential/profile set atomically; a rejected snapshot leaves the previous
+digest and maps unchanged.
 
 `MODEL_GATEWAY_SESSION_HEADER` names one optional upstream header that the model
 gateway fills with the calling agent id, for OpenAI-compatible providers that

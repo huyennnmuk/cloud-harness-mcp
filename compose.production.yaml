@@ -51,9 +51,6 @@ services:
     deploy:
       resources:
         limits: { cpus: "0.50", memory: 512M, pids: 128 }
-    volumes:
-      - /etc/cloud-harness-model-gateway/profiles.json:/run/model-gateway-config/profiles.json:ro
-      - /etc/cloud-harness-model-gateway/provider-api-key:/run/model-gateway-secrets/provider-api-key:ro
   executor-image-keepalive:
     image: cloud-harness-executor:local
     command: ["sleep", "infinity"]

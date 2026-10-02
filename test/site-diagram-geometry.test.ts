@@ -63,9 +63,6 @@ describe('marketing site diagram and structure verification', () => {
     expect(page).toContain('role="tablist"');
     expect(page).toContain('role="tabpanel"');
     expect(page).toContain('aria-selected="true"');
-    expect(page).toContain('The installer prompts for your Cloudflare Tunnel token via hidden input');
-    expect(page).not.toContain('--tunnel-token "YOUR_CLOUDFLARE_TUNNEL_TOKEN"');
-    expect(page).toContain('curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh');
     expect(page).toContain('haas.html');
 
     const haasPage = readFileSync(new URL('../site/haas.html', import.meta.url), 'utf8');

@@ -4,7 +4,7 @@
 set -euo pipefail
 umask 077
 
-PROJECT_ORIGIN="https://github.com/bestagentkits/cloud-harness-mcp.git"
+PROJECT_ORIGIN="${CLOUD_HARNESS_PROJECT_ORIGIN:-https://github.com/huyennnmuk/cloud-harness-mcp.git}"
 INSTALL_ROOT="/opt/cloud-harness-mcp"
 REPO_DIR="$INSTALL_ROOT/repo"
 CONFIG_DIR="/etc/cloud-harness-mcp"
@@ -14,6 +14,7 @@ DOMAIN=""
 EMAIL=""
 INGRESS_MODE="caddy"
 TUNNEL_TOKEN=""
+TUNNEL_TOKEN_FILE=""
 NON_INTERACTIVE=false
 RELEASE_SHA=""
 
@@ -27,7 +28,7 @@ error() {
 
 require_root() {
   if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-    error "install.sh must run as root. Please run: sudo bash install.sh (or curl -fsSL ... | sudo bash)"
+    error "install.sh must run as root from a reviewed local checkout."
     exit 1
   fi
 }
@@ -36,14 +37,17 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain)
+        [[ $# -ge 2 ]] || { error "--domain requires a value"; exit 1; }
         DOMAIN="$2"
         shift 2
         ;;
       --email)
+        [[ $# -ge 2 ]] || { error "--email requires a value"; exit 1; }
         EMAIL="$2"
         shift 2
         ;;
       --ingress)
+        [[ $# -ge 2 ]] || { error "--ingress requires a value"; exit 1; }
         case "$2" in
           caddy|tunnel|custom)
             INGRESS_MODE="$2"
@@ -55,11 +59,13 @@ parse_args() {
         esac
         shift 2
         ;;
-      --tunnel-token)
-        TUNNEL_TOKEN="$2"
+      --tunnel-token-file)
+        [[ $# -ge 2 ]] || { error "--tunnel-token-file requires a value"; exit 1; }
+        TUNNEL_TOKEN_FILE="$2"
         shift 2
         ;;
       --release-sha)
+        [[ $# -ge 2 ]] || { error "--release-sha requires a value"; exit 1; }
         RELEASE_SHA="$2"
         shift 2
         ;;
@@ -69,14 +75,16 @@ parse_args() {
         ;;
       --help|-h)
         cat <<'EOF'
-CloudHarness MCP 1-Click Installer
+CloudHarness MCP Installer
+
+Run this script from a reviewed local checkout.
 
 Options:
   --domain <DOMAIN>          Public domain for HTTPS TLS termination (e.g. mcp.example.com)
   --email <EMAIL>            Email address for Let's Encrypt TLS certificate notifications
   --ingress <caddy|tunnel|custom>
                              Ingress type (default: caddy)
-  --tunnel-token <TOKEN>     Cloudflare Tunnel token (required if --ingress tunnel)
+  --tunnel-token-file <PATH> Absolute path to a regular file containing one Tunnel token
   --release-sha <SHA>        Pinned 40-character Git commit SHA to deploy
   --non-interactive          Run without interactive prompts
   --help, -h                 Show this help message
@@ -89,6 +97,10 @@ EOF
         ;;
     esac
   done
+  if [[ -n $RELEASE_SHA && ! $RELEASE_SHA =~ ^[0-9a-f]{40}$ ]]; then
+    error "--release-sha must be exactly 40 lowercase hexadecimal characters"
+    exit 1
+  fi
 }
 
 preflight_checks() {
@@ -178,6 +190,21 @@ read_prompt() {
   printf -v "$target_var" '%s' "$input_val"
 }
 
+validate_tunnel_token_source() {
+  local path=$1 size value byte_length
+  local -a lines=()
+  [[ $path == /* ]] || { error "--tunnel-token-file must be an absolute path"; return 1; }
+  [[ ! -L $path && -f $path ]] || { error "Tunnel token source must be a regular non-symlink file"; return 1; }
+  size=$(stat -c '%s' -- "$path") || return 1
+  (( size > 0 && size <= 16384 )) || { error "Tunnel token source has an invalid size"; return 1; }
+  mapfile -t lines < "$path"
+  (( ${#lines[@]} == 1 )) || { error "Tunnel token source must contain exactly one line"; return 1; }
+  value=${lines[0]}
+  [[ -n $value && $value != *$'\r'* ]] || { error "Tunnel token source contains an invalid value"; return 1; }
+  LC_ALL=C printf -v byte_length '%d' "${#value}"
+  (( size == byte_length || size == byte_length + 1 )) || { error "Tunnel token source contains invalid bytes"; return 1; }
+}
+
 resolve_ingress_inputs() {
   if [[ -z "$DOMAIN" && "$NON_INTERACTIVE" == "false" ]]; then
     read_prompt "Enter public domain / hostname for MCP server (e.g. mcp.example.com, or press enter for localhost): " DOMAIN false
@@ -192,13 +219,18 @@ resolve_ingress_inputs() {
       error "Cloudflare Tunnel mode requires a public domain / hostname for API_PUBLIC_HOSTS validation. Please provide --domain <DOMAIN>."
       exit 1
     fi
-    if [[ -z "$TUNNEL_TOKEN" && "$NON_INTERACTIVE" == "false" ]]; then
+    if [[ -n $TUNNEL_TOKEN_FILE ]]; then
+      validate_tunnel_token_source "$TUNNEL_TOKEN_FILE" || exit 1
+    elif [[ "$NON_INTERACTIVE" == "false" ]]; then
       read_prompt "Enter Cloudflare Tunnel Token: " TUNNEL_TOKEN true
     fi
-    if [[ -z "$TUNNEL_TOKEN" ]]; then
-      error "Cloudflare Tunnel mode requires a valid tunnel token. Please provide --tunnel-token <TOKEN> or enter it when prompted."
+    if [[ -z "$TUNNEL_TOKEN_FILE" && -z "$TUNNEL_TOKEN" ]]; then
+      error "Cloudflare Tunnel mode requires --tunnel-token-file <absolute-path> in non-interactive mode or hidden TTY input."
       exit 1
     fi
+  elif [[ -n $TUNNEL_TOKEN_FILE ]]; then
+    error "--tunnel-token-file is valid only with --ingress tunnel"
+    exit 1
   fi
 }
 
@@ -273,16 +305,22 @@ bootstrap_directories() {
 checkout_repository() {
   log "Cloning and verifying repository..."
   if [[ ! -d "$REPO_DIR/.git" ]]; then
-    git clone --filter=blob:none "$PROJECT_ORIGIN" "$REPO_DIR"
+    git clone --filter=blob:none --no-checkout "$PROJECT_ORIGIN" "$REPO_DIR"
   fi
 
   cd "$REPO_DIR"
-  git fetch --prune origin main
+  [[ $(git remote get-url origin) == "$PROJECT_ORIGIN" ]] || { error "Managed checkout has an unexpected origin"; exit 1; }
+  git fetch --force --prune origin main
 
   if [[ -z "$RELEASE_SHA" ]]; then
     RELEASE_SHA=$(git rev-parse origin/main)
     log "Target release SHA resolved: $RELEASE_SHA"
   fi
+  [[ $RELEASE_SHA =~ ^[0-9a-f]{40}$ ]] || { error "Resolved release SHA is invalid"; exit 1; }
+  git cat-file -e "$RELEASE_SHA^{commit}" 2>/dev/null || { error "Requested release commit is unavailable"; exit 1; }
+  git merge-base --is-ancestor "$RELEASE_SHA" origin/main || { error "Requested release is not an ancestor of origin/main"; exit 1; }
+  git checkout --detach --force "$RELEASE_SHA"
+  [[ -z $(git status --porcelain --untracked-files=all) ]] || { error "Managed deployment checkout contains untracked files"; exit 1; }
 }
 
 bootstrap_secrets() {
@@ -333,13 +371,24 @@ bootstrap_secrets() {
       printf 'REPO_CACHE_ROOT=/var/lib/cloud-harness/cache/repos\n'
       printf 'EXECUTOR_IMAGE=cloud-harness-executor:local\n'
       printf 'ALLOWED_GIT_HOSTS=github.com\n'
-      printf 'WORKSPACE_NETWORK_MODE=none\n'
+      printf 'WORKSPACE_NETWORK_PROFILE=network-none\n'
       printf 'WORKSPACE_WALL_TTL_SECONDS=900\n'
       printf 'WORKSPACE_IDLE_TTL_SECONDS=300\n'
     } > "$env_file"
     chmod 0600 "$env_file"
   else
+    [[ ! -L $env_file && -f $env_file ]] || { error "Existing runtime configuration must be a regular non-symlink file"; exit 1; }
     log "Preserving existing runtime configuration at $env_file."
+    local profile_count migrated_env
+    profile_count=$(grep -c '^WORKSPACE_NETWORK_PROFILE=' "$env_file" || true)
+    (( profile_count <= 1 )) || { error "Existing runtime configuration contains duplicate WORKSPACE_NETWORK_PROFILE entries"; exit 1; }
+    migrated_env=$(mktemp "$CONFIG_DIR/runtime.env.XXXXXX")
+    grep -v '^WORKSPACE_NETWORK_MODE=' "$env_file" > "$migrated_env"
+    if (( profile_count == 0 )); then
+      printf 'WORKSPACE_NETWORK_PROFILE=network-none\n' >> "$migrated_env"
+    fi
+    install -m 0600 "$migrated_env" "$env_file"
+    rm -f -- "$migrated_env"
     if [[ -n "$DOMAIN" ]]; then
       local current_hosts current_origins
       current_hosts=$(grep '^API_PUBLIC_HOSTS=' "$env_file" | cut -d'=' -f2- || true)
@@ -360,6 +409,9 @@ configure_ingress() {
   log "Configuring ingress topology: $INGRESS_MODE..."
   printf 'INGRESS_MODE=%s\n' "$INGRESS_MODE" > "$CONFIG_DIR/ingress.conf"
   chmod 0600 "$CONFIG_DIR/ingress.conf"
+  if [[ "$INGRESS_MODE" != "tunnel" ]]; then
+    rm -f -- "$CONFIG_DIR/cloudflare-tunnel-token" "$CONFIG_DIR/tunnel.env"
+  fi
 
   if [[ "$INGRESS_MODE" == "caddy" ]]; then
 
@@ -383,22 +435,34 @@ configure_ingress() {
       log "No domain provided. Caddy setup skipped; CloudHarness loopback available at http://127.0.0.1:3100"
     fi
   elif [[ "$INGRESS_MODE" == "tunnel" ]]; then
-    if [[ -n "$TUNNEL_TOKEN" ]]; then
-      printf 'CLOUDFLARE_TUNNEL_TOKEN=%s\n' "$TUNNEL_TOKEN" > "$CONFIG_DIR/tunnel.env"
-      chmod 0600 "$CONFIG_DIR/tunnel.env"
-      log "Cloudflare Tunnel credentials configured."
+    local installed_token="$CONFIG_DIR/cloudflare-tunnel-token"
+    if [[ -n $TUNNEL_TOKEN_FILE && $TUNNEL_TOKEN_FILE == "$installed_token" ]]; then
+      :
+    else
+      install -o root -g 65534 -m 0640 /dev/null "$installed_token"
+      if [[ -n $TUNNEL_TOKEN_FILE ]]; then
+        cat "$TUNNEL_TOKEN_FILE" > "$installed_token"
+      else
+        printf '%s' "$TUNNEL_TOKEN" > "$installed_token"
+      fi
     fi
+    chown 0:65534 "$installed_token"
+    chmod 0640 "$installed_token"
+    TUNNEL_TOKEN=""
+    rm -f -- "$CONFIG_DIR/tunnel.env"
+    log "Cloudflare Tunnel credential file configured."
   fi
 }
 
 install_systemd_and_tools() {
   log "Installing systemd units and administrative CLI utilities..."
-  chmod 0755 "$REPO_DIR/deploy/scripts/service-compose.sh"
   install -m 0644 "$REPO_DIR/deploy/systemd/cloud-harness-mcp.service" /etc/systemd/system/cloud-harness-mcp.service
   install -m 0755 "$REPO_DIR/deploy/scripts/deploy-release.sh" /usr/local/sbin/cloud-harness-deploy
   install -m 0755 "$REPO_DIR/deploy/scripts/rollback-release.sh" /usr/local/sbin/cloud-harness-rollback
   install -m 0755 "$REPO_DIR/deploy/scripts/upgrade-nginx-dashboard.sh" /usr/local/sbin/cloud-harness-upgrade-nginx
   install -m 0755 "$REPO_DIR/deploy/scripts/service-compose.sh" /usr/local/sbin/cloud-harness-service-compose
+  install -m 0755 "$REPO_DIR/deploy/scripts/setup-dependency-firewall.sh" /usr/local/sbin/cloud-harness-setup-dependency-firewall
+  install -m 0755 "$REPO_DIR/deploy/scripts/reconcile-dependency-egress.sh" /usr/local/sbin/cloud-harness-reconcile-dependency-egress
   install -m 0755 "$REPO_DIR/bin/cloudharness" /usr/local/bin/cloudharness
   systemctl daemon-reload
 }
@@ -432,37 +496,15 @@ output_client_configuration() {
 }
 EOF
   chmod 0600 "$client_config_file"
+  token=""
 
   cat <<EOF
 
-================================================================================
-           CloudHarness MCP Server Successfully Installed & Deployed!
-================================================================================
-
-Server Status:
-  - Systemd Service: active (running)
-  - Ingress Endpoint: $endpoint
-  - Management CLI: cloudharness (try: cloudharness status)
-
-Client Configuration (Claude Desktop / Cursor):
-Configuration snippet saved to root-only file: $client_config_file
-
-Copy the following JSON into:
-  - Claude Desktop: ~/Library/Application Support/Claude/claude_desktop_config.json
-  - Cursor: .cursor/mcp.json
-
-{
-  "mcpServers": {
-    "cloud-harness": {
-      "url": "$endpoint",
-      "headers": {
-        "Authorization": "Bearer $token"
-      }
-    }
-  }
-}
-
-================================================================================
+CloudHarness MCP installed and deployed.
+Systemd service: cloud-harness-mcp.service
+Ingress endpoint: $endpoint
+Root-only client configuration: $client_config_file
+Management CLI: cloudharness
 EOF
 }
 main() {
@@ -479,4 +521,6 @@ main() {
   execute_first_deployment
   output_client_configuration
 }
-main "$@"
+if [[ ${CLOUD_HARNESS_INSTALLER_LIBRARY_ONLY:-false} != true ]]; then
+  main "$@"
+fi

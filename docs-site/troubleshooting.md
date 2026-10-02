@@ -108,6 +108,31 @@ bash deploy/scripts/setup-dependency-firewall.sh
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
 To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"`.
 
+### Service fails during dependency-egress pre-start
+
+When `WORKSPACE_NETWORK_PROFILE=dependency-access`, systemd reconciles and
+attests the managed bridge and firewall before Compose starts. A
+`DEPENDENCY_EGRESS_UNAVAILABLE` pre-start failure leaves the service stopped
+and restores the previous Cloud Harness-owned rules. Inspect the service
+journal and host Docker/iptables backend. Do not bypass the pre-start helper or
+silently switch profiles. Selecting `network-none` is explicit and performs no
+bridge or firewall mutation.
+
+### Tunnel token file rejected
+
+The installed `/etc/cloud-harness-mcp/cloudflare-tunnel-token` must be a
+regular, non-symlink, single-line file owned by `root:65534` with mode `0640`.
+Use the reviewed local installer with `--tunnel-token-file`; do not pass the
+token value as an argument or paste full Compose output into diagnostics.
+
+### Rollback snapshot rejected
+
+Manual rollback validates the immutable target referenced by
+`/var/lib/cloud-harness/rollback-current`. A missing pointer, checksum/archive
+failure, unavailable recorded image, or path outside the managed backups root
+stops recovery. Preserve the service and snapshots in their stopped state; do
+not reconstruct `release-previous` or combine files from different snapshots.
+
 ---
 
 ### 11. `GITHUB_PERMISSION_MISSING` / `403 Resource not accessible by integration`

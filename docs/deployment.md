@@ -1,14 +1,16 @@
 # VPS deployment
 
-This route installs the private trusted-operator service behind an existing nginx
-instance. Compose publishes a credential-free TCP ingress proxy only on
-`127.0.0.1:3100`; the API and runner remain on private networks and nginx
-remains the only public ingress. The bootstrap script installs an HTTP server block but
-does not obtain a certificate. Certbot is a separate required step.
+Production supports four ingress ownership modes selected by the root-owned
+`/etc/cloud-harness-mcp/ingress.conf`. A missing file preserves the legacy
+managed-nginx route. Explicit `tunnel`, `caddy`, and `custom` modes keep ingress
+mutation outside the release deploy; Access deployments still run the public
+authentication canary. Compose publishes only the credential-free ingress
+proxy on loopback. The API and runner remain private in every mode.
 
-`owner-bearer` remains the default. The optional Cloudflare Access route adds
-an authentication edge to this topology; it does not replace the private
-API/runner boundary or grant Cloudflare any Docker authority.
+`owner-bearer` remains the default application authentication mode. Cloudflare
+Access is an optional authentication edge and is independent of whether
+transport reaches loopback through managed nginx, Tunnel, Caddy, or a custom
+reverse proxy.
 
 ## Prerequisites and safe preflight
 
@@ -34,7 +36,61 @@ or target filenames already belong to another service. If this project was
 previously installed, back up those two exact files/symlinks before continuing
 instead of treating failed `test` commands as permission to overwrite them.
 
-## First install
+## Reviewed-release installer
+
+Run `scripts/install.sh` only from a reviewed local checkout. Supply an exact
+40-character commit already merged to `origin/main`; the installer fetches,
+proves ancestry, checks out that commit detached, and requires a clean managed
+checkout before creating secrets, ingress configuration, systemd assets, or
+the first deployment.
+
+```bash
+git clone https://github.com/bestagentkits/cloud-harness-mcp.git
+cd cloud-harness-mcp
+git fetch origin main
+RELEASE_SHA="$(git rev-parse origin/main)"
+git checkout --detach "$RELEASE_SHA"
+sudo ./scripts/install.sh --release-sha "$RELEASE_SHA" \
+  --ingress tunnel \
+  --domain mcp.example.com \
+  --tunnel-token-file /root/cloudflare-tunnel-token \
+  --non-interactive
+```
+
+The Tunnel token source must be an absolute, regular, non-symlink, single-line
+file. The installer copies it to
+`/etc/cloud-harness-mcp/cloudflare-tunnel-token` as `root:65534` mode `0640`
+under the `0700` configuration directory. Compose mounts that exact file
+read-only and cloudflared reads it with `--token-file`; the value is absent from
+Compose interpolation, environment, argv, and generated output. The old
+`--tunnel-token` option and `tunnel.env` path are not supported.
+
+`npm run verify:compose` pipes resolved Compose JSON directly through
+`scripts/project-compose-config.mjs`. The retained projection contains only
+service names, image references, command flags, network names, published-port
+metadata, mount metadata, environment variable names, and two non-secret Model
+Gateway mode values. Do not replace that projection with captured full Compose
+output.
+
+Model Gateway starts with an empty dynamic snapshot. No provider profile or key
+file is a first-install prerequisite. Agent launch remains unavailable until an
+operator creates and activates a dashboard-managed profile; the existing
+runner-to-gateway control channel then applies credentials and profiles without
+a gateway restart.
+
+The installer writes the owner client JSON to a root-only file and prints only
+its path. It never prints the bearer credential.
+
+### Updating the pinned cloudflared image
+
+`deploy/cloudflare-tunnel/compose.tunnel.yaml` pins both a reviewed release tag
+and the immutable multi-platform manifest digest. To update it, select a
+Cloudflare release, read the manifest-list digest from the official Docker Hub
+tag record, verify the amd64 and arm64 child manifests, replace tag and digest
+together, then run the Tunnel lifecycle tests and `npm run verify:compose`.
+Never replace the reference with `latest` or a tag without a digest.
+
+## Legacy managed-nginx bootstrap
 
 From a reviewed checkout:
 
@@ -46,29 +102,33 @@ The executable script is
 [`deploy/scripts/bootstrap-vps.sh`](../deploy/scripts/bootstrap-vps.sh). It
 creates root-owned runtime/state directories, generates independent bearer
 tokens only when the runtime file does not already exist, installs fixed deploy
-and rollback commands, installs the systemd unit and this project's dedicated
-nginx file, validates nginx, and reloads it.
+and rollback commands, installs the Compose and dependency-egress pre-start
+helpers, the systemd unit, and this project's dedicated nginx file, validates
+nginx, and reloads it.
 
 Treat bootstrap as a first-install operation. Running it again overwrites this
 project's dedicated nginx target with the repository's HTTP template, including
 Certbot edits in that file. Back up and deliberately reapply TLS configuration
 before any rerun.
 
-The generated `/etc/cloud-harness-mcp/runtime.env` pins
-`WORKSPACE_NETWORK_PROFILE=dependency-access`, so a fresh host opens workspaces
-with public DNS and TCP 80/443 egress for the GitHub API and the bundled `gh`
-CLI. Provision the host firewall with `deploy/scripts/setup-dependency-firewall.sh`
-before the first workspace open, or set that variable to `network-none` for an
-air-gapped host; an unattested egress profile fails the open closed rather than
-downgrading it. An existing runtime file is never rewritten: an upgraded host
-keeps the value it already has and changes it from the dashboard Settings page or
-by editing that variable. The release canary reports the profile it actually
-resolved together with the effective instance default, so a pinned override that
-outranks the built-in default is visible in the deploy output without host
-access.
+The reviewed-release installer emits
+`WORKSPACE_NETWORK_PROFILE=network-none`; the legacy managed-nginx bootstrap
+emits `dependency-access`. Before every systemd start, the root-owned
+`cloud-harness-reconcile-dependency-egress` pre-start helper parses only that
+key from `runtime.env`. `network-none` exits without creating a bridge or
+touching iptables. `dependency-access` creates or inspects the managed bridge,
+validates the IPv4 restore payload before mutation, applies the Cloud
+Harness-owned chains and jumps, and attests the exact resulting network and
+rules before Compose starts. A failed apply or attestation restores the prior
+managed footprint and blocks service startup with
+`DEPENDENCY_EGRESS_UNAVAILABLE`; it never restores unrelated host firewall
+state or silently changes profiles. IPv6 remains disabled on the managed
+bridge, so no IPv6 policy transaction is claimed.
 
-For an existing TLS-enabled installation, the Access-mode release deploy runs
-the dedicated application-route upgrade before its public canary. It can also be
+For an existing TLS-enabled installation in legacy managed-nginx mode, an
+Access release runs the dedicated application-route upgrade before its public
+canary. Explicit `tunnel`, `caddy`, and `custom` ingress skip that nginx
+mutation but still run the same public Access canary. The upgrader can also be
 run idempotently after deploying a release that contains it:
 
 ```bash

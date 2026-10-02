@@ -9,12 +9,30 @@ const MAX_CONTROL_RECORD_BYTES = 1_048_576;
 
 type CancelRequest = (requestId: string) => Promise<boolean>;
 type RevokeLease = (leaseId: string) => Promise<boolean>;
+interface DynamicProfileInput {
+  credentialId?: string;
+  model?: string;
+  downstreamPath?: '/v1/chat/completions' | '/v1/responses';
+  upstreamUrl?: string;
+  pricing?: {
+    inputMicrosPerMillionTokens?: number;
+    outputMicrosPerMillionTokens?: number;
+  };
+  limits?: {
+    maxInputTokens?: number;
+    maxOutputTokens?: number;
+    maxCostMicros?: number;
+  };
+}
+
 
 export interface DynamicGatewayRegistry {
   profiles: Map<string, GatewayProfile>;
   credentials: Map<string, { provider: string; authMode: 'authorization' | 'x-api-key'; secret: string }>;
   snapshotDigest: string;
   gatewayBootId: string;
+  sequence: number;
+  generation: number;
 }
 
 function send(socket: Socket, value: Record<string, unknown>): void {
@@ -84,25 +102,47 @@ export async function startControlServer(options: {
             if (typeof command.requestId !== 'string') throw new Error('invalid requestId');
             send(socket, { ok: true, cancelled: await cancelRequest(command.requestId) });
           } else if (command.operation === 'apply_snapshot' || command.type === 'apply_snapshot') {
+            const nextSequence = Number(command.sequence ?? 1);
+            const nextGeneration = Number(command.generation ?? 1);
+            if (!Number.isInteger(nextSequence) || nextSequence < 1 ||
+                !Number.isInteger(nextGeneration) || nextGeneration < 1) {
+              throw new Error('invalid sequence or generation number');
+            }
+            if (nextGeneration < registry.generation ||
+                (nextGeneration === registry.generation && nextSequence <= registry.sequence)) {
+              throw new Error(`stale snapshot revision (generation: ${nextGeneration}, sequence: ${nextSequence}; current: ${registry.generation}/${registry.sequence})`);
+            }
             const credentials = (command.credentials ?? {}) as Record<string, { provider: string; authMode?: string; secret: string }>;
-            const profiles = (command.profiles ?? {}) as Record<string, any>;
-
-            // Update credentials
+            const profiles = (command.profiles ?? {}) as Record<string, DynamicProfileInput>;
+            const nextCredentials = new Map<string, { provider: string; authMode: 'authorization' | 'x-api-key'; secret: string }>();
+            const nextProfiles = new Map<string, GatewayProfile>();
             for (const [credId, credData] of Object.entries(credentials)) {
+              if (!credId || typeof credData?.provider !== 'string' || !credData.provider ||
+                  typeof credData.secret !== 'string' || !credData.secret) {
+                throw new Error(`invalid credential ${credId || '<empty>'}`);
+              }
+              if (credData.authMode !== undefined && credData.authMode !== 'bearer' &&
+                  credData.authMode !== 'authorization' && credData.authMode !== 'x-api-key') {
+                throw new Error(`unsupported credential auth mode for ${credId}`);
+              }
               const authMode = credData.authMode === 'x-api-key' ? 'x-api-key' : 'authorization';
-              registry.credentials.set(credId, {
+              nextCredentials.set(credId, {
                 provider: credData.provider,
                 authMode,
                 secret: credData.secret
               });
             }
 
-            // Update profiles
             for (const [revId, revData] of Object.entries(profiles)) {
               const credId = revData.credentialId;
-              const cred = typeof credId === 'string' ? registry.credentials.get(credId) : undefined;
+              const cred = typeof credId === 'string' ? nextCredentials.get(credId) : undefined;
               if (!cred) {
                 throw new Error(`unresolved credential binding for profile revision ${revId}`);
+              }
+              if (revData.downstreamPath !== undefined &&
+                  revData.downstreamPath !== '/v1/chat/completions' &&
+                  revData.downstreamPath !== '/v1/responses') {
+                throw new Error(`unsupported downstreamPath for profile revision ${revId}`);
               }
               const limits: ProfileLimits = revData.limits ? {
                 ...defaultLimits(),
@@ -111,18 +151,31 @@ export async function startControlServer(options: {
                 maxCostMicros: revData.limits.maxCostMicros ?? 100_000_000
               } : defaultLimits();
 
-              const upstreamUrl = new URL(revData.upstreamUrl ?? 'https://api.openai.com/v1/chat/completions');
-              if (config.mode !== 'test') {
-                // assertProductionHostname rejects an unsafe address literal, and the resolved
-                // upstream address is validated again and pinned at request time (upstream.ts).
+              const upstreamSource = typeof revData.upstreamUrl === 'string' && revData.upstreamUrl
+                ? revData.upstreamUrl
+                : 'https://api.openai.com/v1/chat/completions';
+              if (/%(?:2e|2f|5c)|\\/iu.test(upstreamSource)) {
+                throw new Error(`profile revision ${revId} upstreamUrl contains an unsafe encoded path`);
+              }
+              const upstreamUrl = new URL(upstreamSource);
+              if (upstreamUrl.protocol !== 'https:' || upstreamUrl.username || upstreamUrl.password || upstreamUrl.hash || upstreamUrl.search) {
+                throw new Error(`profile revision ${revId} upstreamUrl must be an HTTPS URL without credentials, query, or fragment`);
+              }
+              if (upstreamUrl.pathname === '/' || upstreamUrl.pathname.endsWith('/')) {
+                throw new Error(`profile revision ${revId} upstreamUrl must include one fixed request path`);
+              }
+              if (config.mode === 'production') {
                 assertProductionHostname(upstreamUrl.hostname);
+                if (upstreamUrl.port !== '' && upstreamUrl.port !== '443') {
+                  throw new Error(`profile revision ${revId} must use the default HTTPS port`);
+                }
               }
 
               const profile: GatewayProfile = {
                 id: revId,
                 provider: revData.model ?? 'default',
                 model: revData.model ?? 'default',
-                downstreamPath: revData.downstreamPath ?? '/v1/chat/completions',
+                downstreamPath: revData.downstreamPath === '/v1/responses' ? '/v1/responses' : '/v1/chat/completions',
                 upstream: upstreamUrl,
                 credentialFile: '',
                 credentialSecret: cred.secret,
@@ -136,17 +189,21 @@ export async function startControlServer(options: {
                 tlsCaFile: config.mode === 'test' ? config.tlsCaFile : undefined
               };
 
-              registry.profiles.set(revId, profile);
+              nextProfiles.set(revId, profile);
             }
             const snapshotDigest = `sha256:${createHash('sha256').update(record, 'utf8').digest('hex')}`;
+            registry.credentials = nextCredentials;
+            registry.profiles = nextProfiles;
             registry.snapshotDigest = snapshotDigest;
+            registry.sequence = nextSequence;
+            registry.generation = nextGeneration;
 
             send(socket, {
               ok: true,
               ack: {
                 type: 'ack',
-                sequence: Number(command.sequence ?? 1),
-                generation: Number(command.generation ?? 1),
+                sequence: registry.sequence,
+                generation: registry.generation,
                 gatewayBootId: registry.gatewayBootId,
                 snapshotDigest,
                 activeProfileCount: registry.profiles.size,
@@ -159,6 +216,8 @@ export async function startControlServer(options: {
               digest: {
                 gatewayBootId: registry.gatewayBootId,
                 snapshotDigest: registry.snapshotDigest,
+                sequence: registry.sequence,
+                generation: registry.generation,
                 activeProfileCount: registry.profiles.size,
                 activeCredentialCount: registry.credentials.size,
                 activeLeaseCount: leases.activeCount()

@@ -51,30 +51,45 @@ must keep their one-time value in a private credential store.
 
 ## Backup and restore
 
-[`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
-stops the service before creating a timestamped recovery set containing the
-SQLite database, artifact payload archive, and a root-owned copy of the runtime
-configuration/key directory. On deployment failure it restores the prior
-database and artifact payloads and reuses the unchanged configuration. It does
-not back up active workspace files or prune old recovery sets.
+Every deployment validates the candidate SHA, ingress data, required files,
+canary prerequisites, rollback storage, and recorded image IDs before stopping
+the service. After quiescence and before checkout, build, or configuration
+promotion, [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
+creates one immutable versioned snapshot under
+`/var/lib/cloud-harness/backups/`. Its checksummed manifest binds:
 
-Treat the database, artifact payloads, runtime configuration, GitHub App key,
-and complete secret decrypt keyring as one coherent recovery unit. Stop the
-service before copying it so no dashboard, MCP, reaper, WAL, or artifact write
-can race the snapshot. List and close active workspaces first, or explicitly
-accept that their TTL-bound checkouts and in-memory operations are excluded.
-Use the directory shape created by the deploy script rather than inventing a
-database-only backup.
+- the exact prior SHA, or an explicit `absent` first-install state;
+- the complete `/etc/cloud-harness-mcp` configuration tree;
+- the stopped state directory, including SQLite sidecars;
+- the artifact payload archive; and
+- every recorded local service image ID.
 
-To restore, keep the service stopped, preserve the current recovery unit, and
-select one verified snapshot. Restore its database and matching artifact
-archive together. If the configuration or keyring changed since that snapshot,
-restore the matching root-owned config copy before starting the same or a
-schema-compatible release. Never combine an old database with newer artifacts
-or a keyring that cannot decrypt its recorded versions. Check readiness,
-dashboard secret readiness, artifact retrieval, and sanitized audit continuity
-before reopening writes. The state store intentionally refuses an unsupported
-schema version.
+The first deployment that introduces this snapshot format seeds the
+last-known-good configuration and complete image records from the still-running
+release, then verifies their identity before downtime. Run that transition
+before editing authentication or ingress configuration; later same-SHA
+promotions snapshot the previously recorded healthy configuration rather than
+the candidate files already staged under `/etc/cloud-harness-mcp`.
+
+Only after archive and image validation succeeds is the snapshot published
+atomically through `/var/lib/cloud-harness/rollback-current`. A successful
+deployment does not rewrite that pointer to the new state. Retention preserves
+the current rollback target plus five older exact snapshot directories.
+
+Automatic rollback retains the snapshot created by that deployment and never
+consults the mutable pointer. Manual
+`/usr/local/sbin/cloud-harness-rollback` validates `rollback-current` and
+restores it directly, including when its SHA equals the current SHA. Restore
+replaces configuration, state, and artifacts while stopped, retags the exact
+recorded image IDs, installs service assets from the snapshot SHA, starts the
+unit, and requires readiness, image identity, and the restored authentication
+canary. A failed validation or restore disables and stops the service instead
+of serving mixed generations.
+
+Treat each snapshot as one recovery unit. Do not combine its database, artifact
+archive, configuration, keyring, or image records with another snapshot.
+Active workspace checkouts remain TTL-bound and are excluded; close or finalize
+them before a planned deployment when their contents matter.
 
 If workspace content must be retained, commit changes and use `git_push` only
 when the configured GitHub App has repository write access; verify the remote
@@ -184,44 +199,35 @@ merge opens a single container-recreation window instead of two. Run **Deploy
 production** manually (`workflow_dispatch`, optionally with an explicit
 40-character commit SHA) to force a deploy.
 
-An automatic deployment failure restores the prior recorded commit, the
-quiesced database/artifact state, the last healthy runtime configuration and
-runner-only key files, and rebuilt service images when a prior release exists.
-The deploy script records the active configuration only after readiness,
-image-identity, and canary checks succeed.
+An automatic deployment failure restores the deployment's newly created
+pre-mutation snapshot: exact commit, configuration, stopped state, artifacts,
+recorded images, readiness, and the canary selected by the restored auth mode.
+The snapshot exists even for a same-SHA configuration promotion, so an
+owner-bearer to Access change can return to the prior owner-bearer state without
+inventing a different commit.
 
-That automatic recovery has two limits worth knowing before you rely on it.
+Recovery is fail-closed. If snapshot validation, restore, exact-image startup,
+readiness, or canary verification fails, `contain_failed_release` disables and
+stops `cloud-harness-mcp.service` and removes the managed Compose services.
+Never start selected pieces manually after that outcome; preserve the failed
+and rollback snapshots for diagnosis.
 
-It is fail-closed. If the restore itself fails, `contain_failed_release` in
-`deploy/scripts/release-runtime.sh` runs
-`systemctl disable --now cloud-harness-mcp.service` and
-`compose down --remove-orphans`, deliberately leaving the release **stopped**
-rather than serving a half-promoted one.
-
-It does not run when the deploy is interrupted. The automatic path is
-`trap rollback ERR` in `deploy/scripts/deploy-release.sh`, and `ERR` does not
-fire on a signal, so a deploy cut short by a dropped SSH connection (`SIGHUP`)
-stops without restoring anything. The deploy stops the running release before it
-compiles the new images and promotes them only after the canary passes, so an
-interrupted run can leave the release stopped with no automatic recovery. Check
-the state and use the manual rollback below.
-A manual:
+The shell `ERR` trap cannot recover an interrupted process after every signal.
+If SSH or the deploy process disappears, inspect the service and snapshot
+pointer, then run:
 
 ```bash
 sudo /usr/local/sbin/cloud-harness-rollback
 ```
 
-delegates to the deploy script with the recorded previous release. To deploy a
-different known-good commit on `origin/main`, pass its exact
-40-character SHA to `/usr/local/sbin/cloud-harness-deploy`. The current
-pipeline builds images on the VPS and records local image IDs; it does not pull
-an externally attested image digest.
+That command restores `/var/lib/cloud-harness/rollback-current` directly. It
+does not run a new deployment, create another snapshot, or derive a target from
+`release-previous`. To deploy a different known-good commit instead, use its
+exact 40-character SHA with `/usr/local/sbin/cloud-harness-deploy`; this is a
+new deployment and therefore creates a new pre-mutation snapshot.
 
-Always verify loopback readiness, HTTPS, dashboard secret readiness, artifact
-state, API-key gateway disablement when applicable, and managed-container
-cleanup after a rollback. Retain at least one
-known-good coherent recovery set; backup retention is an operator policy, not
-an automated service feature.
+Always verify loopback readiness, the public authentication canary, dashboard
+secret readiness, artifacts, and managed-container cleanup after rollback.
 
 ## Owner-Authorized Real-Provider Canary Runbook (Subagents)
 
@@ -231,9 +237,11 @@ To verify live provider connectivity and obtain the operational receipts require
 
 - Verify exact release SHA, image digests, and staging deployment status.
 - Prepare a disposable test repository (no private secrets, PII, or customer data).
-- Ensure workspace uses `networkMode: "none"`.
-- Configure an operator profile in `/etc/cloud-harness-model-gateway/profiles.json` with low hard caps (`maxCostMicros: 500000`, approximately $0.50 maximum spending ceiling).
-- Mount the provider API key exclusively into Model Gateway (`/etc/cloud-harness-model-gateway/provider-api-key`).
+- Ensure the workspace uses `networkProfile: "network-none"`.
+- Create an encrypted provider credential and activate a dashboard-managed
+  profile with `maxCostMicros: 500000` (approximately $0.50 maximum). Confirm
+  Model Gateway acknowledges the dynamic snapshot; do not add a static profile
+  or provider-key mount.
 
 ### 2. Execution protocol
 

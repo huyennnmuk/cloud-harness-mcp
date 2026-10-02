@@ -35,6 +35,9 @@ install -m 0755 "$project_root/deploy/scripts/deploy-release.sh" /usr/local/sbin
 install -m 0755 "$project_root/deploy/scripts/rollback-release.sh" /usr/local/sbin/cloud-harness-rollback
 install -m 0755 "$project_root/deploy/scripts/upgrade-nginx-dashboard.sh" /usr/local/sbin/cloud-harness-upgrade-nginx
 install -m 0755 "$project_root/deploy/scripts/deploy-ssh-wrapper.sh" /usr/local/sbin/cloud-harness-deploy-ssh
+install -m 0755 "$project_root/deploy/scripts/service-compose.sh" /usr/local/sbin/cloud-harness-service-compose
+install -m 0755 "$project_root/deploy/scripts/setup-dependency-firewall.sh" /usr/local/sbin/cloud-harness-setup-dependency-firewall
+install -m 0755 "$project_root/deploy/scripts/reconcile-dependency-egress.sh" /usr/local/sbin/cloud-harness-reconcile-dependency-egress
 install -m 0644 "$project_root/deploy/systemd/cloud-harness-mcp.service" /etc/systemd/system/cloud-harness-mcp.service
 install -m 0644 "$project_root/deploy/nginx/cloud-harness-mcp.conf" /etc/nginx/sites-available/cloud-harness-mcp.conf
 ln -sfn /etc/nginx/sites-available/cloud-harness-mcp.conf /etc/nginx/sites-enabled/cloud-harness-mcp.conf
