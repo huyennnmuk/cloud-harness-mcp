@@ -2,6 +2,8 @@
 
 Generated: 2026-10-02
 Scope: Shared VPS `72.62.171.12` | Domain `codepod.site` | Hostinger / Cloudflare
+Release SHA: `ed72f263bbcb163b0a9083b6aa53480ad3188706` (verified ancestor of `origin/main`)
+Repository Origin: `git@github.com:huyennnmuk/cloud-harness-mcp.git`
 
 ---
 
