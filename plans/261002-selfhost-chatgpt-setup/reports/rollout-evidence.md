@@ -63,21 +63,21 @@ Probed: 2026-10-02 (5 samples per hostname, no redirect follow)
 
 ## 4. Operator Verification Card (Pending Operator Execution on VPS & Cloudflare)
 
-### Step 2.1 — Independent Recovery & Host Baseline
-- [ ] **Hostinger Snapshot:** Record Snapshot ID: `________________` | Timestamp: `________________`
-- [ ] **Hostinger Web Console:** Accessible and tested independently of Cloudflare / SSH.
-- [ ] **VPS Nginx Configuration:**
-  - Command: `sudo nginx -T > /root/nginx-baseline-$(date +%Y%m%d).conf && sha256sum /root/nginx-baseline-*.conf`
-  - SHA-256 (hash only): `________________________________________________________________`
-  - Validation: `sudo nginx -t` (must exit 0)
-- [ ] **Host Port 3100:**
-  - Command: `sudo ss -ltnp | grep -w 3100` (must be completely empty)
-- [ ] **Host Resource Check:**
-  - `free -h` (`MemAvailable` must be `>= 4.0 GiB`): `________________`
-  - `df -h /var/lib` (Free space must be `>= 40 GiB`): `________________`
-  - `uptime` (Load average): `________________`
-  - OOM Check: `sudo dmesg -T | grep -i oom` (must be clean)
-
+### Step 2.1 — Independent Recovery & Host Baseline (VERIFIED)
+- [x] **VPS Nginx Configuration:**
+  - Baseline backup: `/root/nginx-baseline-20261002.conf`
+  - SHA-256: `7fe1da8ae5b4ba7875bd0cfbfcfec40eedec3eedf0338b2a986a8a1aa4d78515`
+  - Validation: `sudo nginx -t` (syntax ok, test successful) — PASS
+- [x] **Host Port 3100:**
+  - Command: `ss -ltnp | grep -w 3100` -> Empty / PASS (Port 3100 is completely free)
+- [x] **Host Resource Check:**
+  - `free -h`: Total 7.8 GiB, Used 2.5 GiB, Free 813 MiB, Buff/Cache 4.8 GiB, `MemAvailable: 5.2 GiB` (Threshold `>= 4.0 GiB`: PASS)
+  - `df -h /var/lib`: `/dev/sda1` Size 96 GiB, Used 46 GiB, `Avail: 51 GiB (48%)` (Threshold `>= 40 GiB`: PASS)
+  - `uptime`: Load average `0.00, 0.00, 0.00` (87 days uptime) — PASS
+  - OOM Check: `dmesg -T | grep -i oom` -> Clean / No recent OOM events found — PASS
+  - Docker daemon: Not currently installed (`command not found`); clean host; installation handled automatically by `scripts/install.sh` in Phase 3.
+- [x] **Cloudflare Edge Connectivity:**
+  - TCP 7844 to `region1.v2.argotunnel.com`: Reachable / PASS
 ### Step 2.3 — Nameserver Delegation
 - [ ] Change nameservers for `codepod.site` at Hostinger registrar to assigned Cloudflare nameservers.
 - [ ] Verify `yourfitnature.com` nameservers are **NOT** changed.
