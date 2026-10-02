@@ -372,6 +372,7 @@ bootstrap_secrets() {
       printf 'EXECUTOR_IMAGE=cloud-harness-executor:local\n'
       printf 'ALLOWED_GIT_HOSTS=github.com\n'
       printf 'WORKSPACE_NETWORK_PROFILE=network-none\n'
+      printf 'MAX_ACTIVE_WORKSPACES_PER_OWNER=1\n'
       printf 'WORKSPACE_WALL_TTL_SECONDS=900\n'
       printf 'WORKSPACE_IDLE_TTL_SECONDS=300\n'
     } > "$env_file"

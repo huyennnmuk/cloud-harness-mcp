@@ -2,7 +2,7 @@
 
 Generated: 2026-10-02
 Scope: Shared VPS `72.62.171.12` | Domain `codepod.site` | Hostinger / Cloudflare
-Release SHA: `ed72f263bbcb163b0a9083b6aa53480ad3188706` (verified ancestor of `origin/main`)
+Release SHA: `483391f0e8c98d566bf63097406919e12bc3ecf4` (verified ancestor of `origin/main`; behavior-identical base `ed72f26` with plan/evidence additions)
 Repository Origin: `git@github.com:huyennnmuk/cloud-harness-mcp.git`
 
 ---
@@ -56,12 +56,11 @@ Probed: 2026-10-02 (5 samples per hostname, no redirect follow)
 
 - **VPS Spec:** 2 vCPU, 8 GiB RAM, 100 GiB Disk.
 - **Memory:** 3520 MiB worst-case ceiling leaves ~4.5 GiB available for host OS and existing workloads. Target `MemAvailable >= 4 GiB` is feasible provided host baseline usage is `< 3.5 GiB`.
-- **CPU:** The arithmetic total (3.77 vCPU) exceeds physical 2.0 vCPU. Because Docker CPU limits represent scheduling quotas rather than pinned reservations, operational oversubscription is acceptable only if workloads are serialized and existing-site latency thresholds are enforced.
-- **Agent Concurrency Safeguard:** Default `MAX_ACTIVE_AGENTS_PER_WORKSPACE=4` would add up to 4 CPU / 4 GiB. For this shared host, agent containers should be explicitly disabled or serialized (`MAX_ACTIVE_AGENTS_PER_WORKSPACE=0` or restricted).
+- **CPU & Concurrency Safeguard:** The arithmetic total (3.77 vCPU ceiling) on a 2-vCPU host represents an operational oversubscription model. Because Docker CPU limits define scheduling quotas rather than pinned core reservations, oversubscription is accepted under the hard invariant that workspace admission is strictly serialized (`MAX_ACTIVE_WORKSPACES_PER_OWNER=1` in `runtime.env`), Model Gateway has zero active profiles, no agent containers are launched, and existing-site health/latency abort thresholds remain active throughout rollout.
 
 ---
 
-## 4. Operator Verification Card (Pending Operator Execution on VPS & Cloudflare)
+## 4. Operator Verification Card (Completed & Verified)
 
 ### Step 2.1 — Independent Recovery & Host Baseline (VERIFIED)
 - [x] **VPS Nginx Configuration:**
